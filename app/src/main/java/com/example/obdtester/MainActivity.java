@@ -1,27 +1,27 @@
 package com.example.obdtester;
 
 import android.app.Activity;
-import android.car.Car;
-import android.car.hardware.CarPropertyValue;
-import android.car.hardware.property.CarPropertyManager;
+import android.content.Context;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.graphics.Color;
 import android.view.Gravity;
 import android.widget.TextView;
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 
 public class MainActivity extends Activity {
     private TextView textView;
     private Handler handler = new Handler(Looper.getMainLooper());
-    private CarPropertyManager propertyManager;
-    private Car car;
+    private Object carInstance;
+    private Object propertyManager;
+    private boolean isCarReady = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        // Создаем экран программно
         textView = new TextView(this);
         textView.setTextColor(Color.WHITE);
         textView.setTextSize(40);
@@ -29,76 +29,108 @@ public class MainActivity extends Activity {
         textView.setPadding(50, 50, 50, 50);
         setContentView(textView);
 
-        // Подключаемся к сервису автомобиля
-        try {
-            car = Car.createCar(this);
-            propertyManager = (CarPropertyManager) car.getCarManager(Car.PROPERTY_SERVICE);
-        } catch (Exception e) {
-            textView.setText("Ошибка подключения к Car API:\n" + e.getMessage());
-            return;
-        }
+        textView.setText("Подключение к Car API...\n");
 
-        // Запускаем цикл опроса каждую секунду
+        // Инициализируем подключение в фоновом потоке, чтобы не подвесить экран
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    // Ищем класс android.car.Car
+                    Class<?> carClass = Class.forName("android.car.Car");
+                    Method createCarMethod = carClass.getMethod("createCar", Context.class);
+                    carInstance = createCarMethod.invoke(null, MainActivity.this);
+
+                    if (carInstance != null) {
+                        // Получаем PROPERTY_SERVICE
+                        Field propServiceField = carClass.getField("PROPERTY_SERVICE");
+                        String propServiceName = (String) propServiceField.get(null);
+
+                        // Получаем менеджер свойств
+                        Method getCarManagerMethod = carClass.getMethod("getCarManager", String.class);
+                        propertyManager = getCarManagerMethod.invoke(carInstance, propServiceName);
+                        isCarReady = true;
+                    }
+                } catch (Exception e) {
+                    final String error = "Ошибка Reflection:\n" + e.toString();
+                    runOnUiThread(new Runnable() {
+                        public void run() { textView.setText(error); }
+                    });
+                }
+            }
+        }).start();
+
+        // Запускаем цикл опроса
         handler.postDelayed(new Runnable() {
             @Override
             public void run() {
-                readData();
+                if (isCarReady) {
+                    readData();
+                }
                 handler.postDelayed(this, 1000);
             }
-        }, 1000);
+        }, 2000); // Даем 2 секунды на инициализацию
     }
 
     private void readData() {
-        if (propertyManager == null) return;
-
         StringBuilder sb = new StringBuilder();
-        
-        // 1. СКОРОСТЬ
-        sb.append("Скорость:\n");
-        sb.append(getPropValue(android.car.VehiclePropertyIds.PERF_VEHICLE_SPEED, "км/ч")).append("\n\n");
-
-        // 2. ОБОРОТЫ
-        sb.append("Обороты:\n");
-        sb.append(getPropValue(android.car.VehiclePropertyIds.ENGINE_RPM, "об/мин")).append("\n\n");
-
-        // 3. ТЕМПЕРАТУРА ОЖ
-        sb.append("Температура ОЖ:\n");
-        sb.append(getPropValue(android.car.VehiclePropertyIds.ENGINE_COOLANT_TEMP, "°C")).append("\n\n");
-
-        // 4. ТОПЛИВО
-        sb.append("Топливо:\n");
-        sb.append(getPropValue(android.car.VehiclePropertyIds.FUEL_LEVEL, "мл")).append("\n");
-
+        sb.append("Скорость:\n").append(getPropValue("PERF_VEHICLE_SPEED", "км/ч")).append("\n\n");
+        sb.append("Обороты:\n").append(getPropValue("ENGINE_RPM", "об/мин")).append("\n\n");
+        sb.append("Температура ОЖ:\n").append(getPropValue("ENGINE_COOLANT_TEMP", "°C")).append("\n\n");
+        sb.append("Топливо:\n").append(getPropValue("FUEL_LEVEL", "мл")).append("\n");
         textView.setText(sb.toString());
     }
 
-    private String getPropValue(int propId, String unit) {
+    private String getPropValue(String propName, String unit) {
         try {
-            CarPropertyValue<?> value = propertyManager.getProperty(propId, 0);
-            if (value != null && value.getStatus() == CarPropertyValue.STATUS_AVAILABLE) {
-                Object val = value.getValue();
-                if (val instanceof Float) {
-                    return String.format("%.1f %s", (Float) val, unit);
-                } else if (val instanceof Integer) {
-                    return val + " " + unit;
-                } else if (val instanceof Double) {
-                    return String.format("%.1f %s", (Double) val, unit);
-                }
-                return val.toString() + " " + unit;
-            } else {
-                return "Нет данных (Ошибка: " + (value != null ? value.getStatus() : "null") + ")";
+            // Получаем ID свойства (например, ENGINE_RPM)
+            Class<?> propIdsClass = Class.forName("android.car.VehiclePropertyIds");
+            Field propField = propIdsClass.getField(propName);
+            int propId = propField.getInt(null);
+
+            // Вызываем getProperty(id, area)
+            Method getPropertyMethod = propertyManager.getClass().getMethod("getProperty", int.class, int.class);
+            Object carPropertyValue = getPropertyMethod.invoke(propertyManager, propId, 0);
+
+            if (carPropertyValue == null) {
+                return "Нет данных (null)";
             }
+
+            // Получаем статус
+            Method getStatusMethod = carPropertyValue.getClass().getMethod("getStatus");
+            int status = (int) getStatusMethod.invoke(carPropertyValue);
+
+            if (status != 0) { // 0 = STATUS_AVAILABLE
+                return "Недоступно (Статус: " + status + ")";
+            }
+
+            // Получаем само значение
+            Method getValueMethod = carPropertyValue.getClass().getMethod("getValue");
+            Object value = getValueMethod.invoke(carPropertyValue);
+
+            if (value instanceof Float) {
+                return String.format("%.1f %s", (Float) value, unit);
+            } else if (value instanceof Integer) {
+                return value + " " + unit;
+            } else if (value instanceof Double) {
+                return String.format("%.1f %s", (Double) value, unit);
+            }
+            return value.toString() + " " + unit;
+
         } catch (Exception e) {
-            return "Ошибка доступа (Возможно, нет прав)";
+            return "Ошибка: " + e.getCause();
         }
     }
 
     @Override
     protected void onDestroy() {
         super.onDestroy();
-        if (car != null) {
-            car.disconnect();
-        }
         handler.removeCallbacksAndMessages(null);
+        if (carInstance != null) {
+            try {
+                Method disconnect = carInstance.getClass().getMethod("disconnect");
+                disconnect.invoke(carInstance);
+            } catch (Exception ignored) {}
+        }
     }
 }

@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.example.obdtester">
+
+    <!-- Разрешения для чтения данных с CAN-шины (Android Automotive) -->
+    <uses-permission android:name="android.car.permission.CAR_SPEED" />
+    <uses-permission android:name="android.car.permission.CAR_ENGINE_DETAILED" />
+    <uses-permission android:name="android.car.permission.CAR_ENERGY" />
+
+    <!-- Указываем, что приложение для автомобильной системы -->
+    <uses-feature android:name="android.hardware.type.automotive" android:required="true" />
+
+    <application
+        android:allowBackup="true"
+        android:label="OBD Тестер"
+        android:theme="@android:style/Theme.Material.NoActionBar">
+        
+        <activity android:name=".MainActivity"
+            android:exported="true"
+            android:screenOrientation="sensorLandscape">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+        
+    </application>
+
+</manifest>

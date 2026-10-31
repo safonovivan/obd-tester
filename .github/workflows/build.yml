@@ -18,14 +18,16 @@ jobs:
         java-version: '17'
         distribution: 'temurin'
 
-    # Исправленный шаг: передаем пустой список пакетов
     - name: Setup Android SDK
       uses: android-actions/setup-android@v3
       with:
         packages: ''
 
+    # ВОТ ГЛАВНОЕ ИСПРАВЛЕНИЕ: жестко задаем версию 7.6
     - name: Setup Gradle
       uses: gradle/actions/setup-gradle@v4
+      with:
+        gradle-version: 7.6
 
     - name: Grant execute permission for gradlew
       run: chmod +x ./gradlew || true

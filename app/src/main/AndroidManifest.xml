@@ -2,13 +2,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.example.obdtester">
 
-    <!-- Разрешения для чтения данных с CAN-шины (Android Automotive) -->
-    <uses-permission android:name="android.car.permission.CAR_SPEED" />
-    <uses-permission android:name="android.car.permission.CAR_ENGINE_DETAILED" />
-    <uses-permission android:name="android.car.permission.CAR_ENERGY" />
-
-    <!-- Указываем, что приложение для автомобильной системы -->
-    <uses-feature android:name="android.hardware.type.automotive" android:required="true" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
 
     <application
         android:allowBackup="true"
@@ -25,5 +20,4 @@
         </activity>
         
     </application>
-
 </manifest>

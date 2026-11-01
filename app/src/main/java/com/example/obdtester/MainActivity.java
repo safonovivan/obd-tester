@@ -24,7 +24,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 public class MainActivity extends Activity {
-    private TextView tvSpeed, tvCoolant, tvGear, tvSteering, tvDoor, tvTransTemp;
+    private TextView tvSpeed, tvCoolant, tvGear, tvDoor, tvTransTemp;
     private IBinder bcmService;
     private boolean isServiceConnected = false;
     private final String CLIENT_NAME = "OBDTester-" + java.util.UUID.randomUUID().toString();
@@ -49,12 +49,14 @@ public class MainActivity extends Activity {
         mainLayout.setPadding(40, 20, 40, 20);
         mainLayout.setGravity(Gravity.CENTER);
 
+        // Верхняя строка (Скорость)
         tvSpeed = new TextView(this);
         tvSpeed.setTextColor(Color.WHITE);
         tvSpeed.setTextSize(80);
         tvSpeed.setGravity(Gravity.CENTER);
         tvSpeed.setText("0 км/ч");
 
+        // Средняя строка (Передача и Температура ОЖ)
         LinearLayout middleLayout = new LinearLayout(this);
         middleLayout.setOrientation(LinearLayout.HORIZONTAL);
         middleLayout.setGravity(Gravity.CENTER);
@@ -74,6 +76,7 @@ public class MainActivity extends Activity {
         middleLayout.addView(tvGear);
         middleLayout.addView(tvCoolant);
 
+        // Нижняя строка (Статус дверей и температура коробки)
         LinearLayout bottomLayout = new LinearLayout(this);
         bottomLayout.setOrientation(LinearLayout.HORIZONTAL);
         bottomLayout.setGravity(Gravity.CENTER);
@@ -150,7 +153,7 @@ public class MainActivity extends Activity {
                 String signalName = data.readString();
                 final int signalValue = data.readInt();
 
-                // 1. ПИШЕМ В ЛОГ
+                // 1. ПИШЕМ В ЛОГ (черный ящик)
                 String time = timeFormat.format(new Date());
                 writeToLog(String.format(Locale.US, "[%s] СОБЫТИЕ: %s = %d", time, signalName, signalValue));
 
@@ -175,12 +178,25 @@ public class MainActivity extends Activity {
             case "VCU_VehSpd":
                 tvSpeed.setText(String.format(Locale.US, "%d км/ч", value));
                 break;
+                
             case "BCM_Coolant_R":
-                tvCoolant.setText(String.format(Locale.US, "ОЖ: %d °C", value));
+                // Фильтр: если температура выше 120 или ниже -40, это мусор при выключении зажигания
+                if (value > 120 || value < -40) {
+                    // Игнорируем
+                } else {
+                    tvCoolant.setText(String.format(Locale.US, "ОЖ: %d °C", value));
+                }
                 break;
+                
             case "BCM_TRANS_OIL_TEMP_R":
-                tvTransTemp.setText(String.format(Locale.US, "АКПП: %d °C", value));
+                // Фильтр для АКПП
+                if (value > 150 || value < -40) {
+                    // Игнорируем
+                } else {
+                    tvTransTemp.setText(String.format(Locale.US, "АКПП: %d °C", value));
+                }
                 break;
+                
             case "BCM_VCU_GearSts_R":
                 String gearText = "?";
                 if (value == 0) gearText = "P";
@@ -189,6 +205,7 @@ public class MainActivity extends Activity {
                 else if (value == 7) gearText = "R";
                 tvGear.setText(gearText);
                 break;
+                
             case "BCM_DriverDoorSts":
                 tvDoor.setText(value == 1 ? "Двери: ОТКРЫТЫ" : "Двери: Закрыты");
                 if (value == 1) tvDoor.setTextColor(Color.RED);
@@ -220,7 +237,7 @@ public class MainActivity extends Activity {
         return false;
     }
 
-    // --- ЛОГИКА ЛОГОВ (Наш "Черный ящик") ---
+    // --- ЛОГИКА ЛОГОВ ---
     private File getNextLogFile() {
         if (logDir == null) return null;
         int maxIndex = 0;

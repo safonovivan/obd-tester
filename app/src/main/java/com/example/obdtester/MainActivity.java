@@ -6,6 +6,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.ServiceConnection;
 import android.graphics.Color;
+import android.os.Binder;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.IBinder;
@@ -37,6 +38,9 @@ public class MainActivity extends Activity {
     private IBinder bcmService;
     private boolean isServiceConnected = false;
     private int[] cachedData = new int[179];
+    
+    // Строка-идентификатор нашего клиента (как в M6Drive)
+    private final String CLIENT_NAME = "OBDTester-" + java.util.UUID.randomUUID().toString();
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -70,7 +74,7 @@ public class MainActivity extends Activity {
 
         textView = new TextView(this);
         textView.setTextColor(Color.WHITE);
-        textView.setTextSize(25);
+        textView.setTextSize(20);
         textView.setPadding(0, 30, 0, 0);
         textView.setText("Ожидание...\nПопытка подключения к BCM Service...");
 
@@ -87,7 +91,6 @@ public class MainActivity extends Activity {
 
     private void bindToBcmService() {
         Intent intent = new Intent();
-        // Точные пути из реверса M6Drive
         intent.setComponent(new ComponentName(
                 "com.adayo.midware.bcmservice",
                 "com.adayo.midware.bcmservice.Controller.BcmService"
@@ -109,11 +112,33 @@ public class MainActivity extends Activity {
         @Override
         public void onServiceConnected(ComponentName name, IBinder service) {
             bcmService = service;
-            isServiceConnected = true;
-            writeToLog("УСПЕХ: Подключено к Adayo BCM Service");
-            runOnUiThread(new Runnable() {
-                public void run() { textView.setText("Служба BCM подключена!\nНажмите СТАРТ"); }
-            });
+            
+            // Проверяем интерфейс (защита от подмены)
+            try {
+                if (!"com.adayo.module.bcmproxy.IBcmServiceAIDL".equals(service.getInterfaceDescriptor())) {
+                    writeToLog("ОШИБКА: Неверный интерфейс сервиса: " + service.getInterfaceDescriptor());
+                    return;
+                }
+            } catch (RemoteException e) {
+                writeToLog("ОШИБКА RemoteException при получении дескриптора");
+                return;
+            }
+
+            // 1. СНАЧАЛА ПОДПИСЫВАЕМСЯ (transact 3)
+            boolean subSuccess = subscribeToBcm();
+            
+            if (subSuccess) {
+                isServiceConnected = true;
+                writeToLog("УСПЕХ: Подписка на BCM оформлена");
+                runOnUiThread(new Runnable() {
+                    public void run() { textView.setText("Служба BCM подключена!\nНажмите СТАРТ"); }
+                });
+            } else {
+                writeToLog("ОШИБКА: Не удалось подписаться на BCM");
+                runOnUiThread(new Runnable() {
+                    public void run() { textView.setText("Ошибка подписки на BCM"); }
+                });
+            }
         }
 
         @Override
@@ -123,6 +148,63 @@ public class MainActivity extends Activity {
             writeToLog("ВНИМАНИЕ: Служба BCM отключена");
         }
     };
+
+    // ЭТОТ БЛОК - НАШ ПРИЕМНИК (CALLBACK)
+    // Сюда система будет присылать данные, когда ты откроешь дверь или нажмешь газ
+    private final IBinder bcmCallback = new Binder() {
+        @Override
+        protected boolean onTransact(int code, Parcel data, Parcel reply, int flags) throws RemoteException {
+            if (code == 1) { // 1 - код события
+                data.enforceInterface("com.adayo.module.bcmproxy.IBcmClientCallBack");
+                
+                // Читаем название сигнала (например, "VCU_VehSpd")
+                String signalName = data.readString();
+                // Читаем само значение
+                int signalValue = data.readInt();
+                
+                // Пишем в лог!
+                String time = timeFormat.format(new Date());
+                writeToLog(String.format(Locale.US, "[%s] СОБЫТИЕ: %s = %d", time, signalName, signalValue));
+                
+                // Если это скорость - выводим на экран
+                if ("VCU_VehSpd".equals(signalName)) {
+                    final String text = "Скорость: " + signalValue + " км/ч";
+                    runOnUiThread(new Runnable() {
+                        public void run() { textView.setText(text); }
+                    });
+                }
+
+                if (reply != null) reply.writeNoException();
+                return true;
+            }
+            return super.onTransact(code, data, reply, flags);
+        }
+    };
+
+    private boolean subscribeToBcm() {
+        if (bcmService == null) return false;
+        Parcel data = Parcel.obtain();
+        Parcel reply = Parcel.obtain();
+        try {
+            data.writeInterfaceToken("com.adayo.module.bcmproxy.IBcmServiceAIDL");
+            data.writeString(CLIENT_NAME); // Имя клиента
+            data.writeStrongBinder(bcmCallback); // Наш приемник
+
+            // transact(3) - это код подписки
+            boolean transactSuccess = bcmService.transact(3, data, reply, 0);
+            
+            if (transactSuccess) {
+                reply.readException();
+                return reply.readInt() != 0; // 1 = успех
+            }
+        } catch (Exception e) {
+            writeToLog("Ошибка при подписке: " + e.toString());
+        } finally {
+            data.recycle();
+            reply.recycle();
+        }
+        return false;
+    }
 
     private void startPolling() {
         if (!isServiceConnected) {
@@ -147,49 +229,33 @@ public class MainActivity extends Activity {
         public void run() {
             if (!isRunning) return;
             readData();
-            handler.postDelayed(this, 1000); // 1 раз в секунду
+            handler.postDelayed(this, 2000); // Раз в 2 секунды
         }
     };
 
     private void readData() {
         if (bcmService == null) return;
 
-        StringBuilder sb = new StringBuilder();
-        String time = timeFormat.format(new Date());
-
         boolean success = readBcmCache();
 
         if (success) {
-            sb.append("Кэш получен! Длина: 179\n\n");
-            // Выводим для примера то, что нашли в реверсе
-            sb.append("Idx 59 (Напряж?): ").append(cachedData[59]).append("\n");
-            sb.append("Idx 102 (Темп КПП?): ").append(cachedData[102]).append("\n");
-            sb.append("Idx 0 (Сырое): ").append(cachedData[0]).append("\n\n");
-            sb.append("Остальные данные пишутся в лог.");
-
-            writeToLog(String.format(Locale.US, "[%s] Cache OK | Val59: %d | Val102: %d | Val0: %d", time, cachedData[59], cachedData[102], cachedData[0]));
-        } else {
-            sb.append("Не удалось прочитать кэш.\nПроверьте логи.");
-            writeToLog("[" + time + "] ОШИБКА чтения кэша");
+            // Если мы хотим просто проверить, что кэш живой
+            writeToLog(String.format(Locale.US, "[%s] КЭШ: Val59: %d | Val102: %d", timeFormat.format(new Date()), cachedData[59], cachedData[102]));
         }
-
-        textView.setText(sb.toString());
     }
 
     private boolean readBcmCache() {
         Parcel data = Parcel.obtain();
         Parcel reply = Parcel.obtain();
         try {
-            // Строка-идентификатор интерфейса из реверса
             data.writeInterfaceToken("com.adayo.module.bcmproxy.IBcmServiceAIDL");
             
-            // Метод 4 - это чтение кэша (согласно реверсу)
+            // transact(4) - чтение кэша
             boolean transactSuccess = bcmService.transact(4, data, reply, 0);
             
             if (transactSuccess) {
                 reply.readException();
                 int successFlag = reply.readInt();
-                // 716 байт = 179 * 4 байта (int)
                 if (successFlag == 1 && reply.dataAvail() == 716) {
                     for (int i = 0; i < 179; i++) {
                         cachedData[i] = reply.readInt();
@@ -197,10 +263,8 @@ public class MainActivity extends Activity {
                     return true;
                 }
             }
-        } catch (RemoteException e) {
-            writeToLog("RemoteException: " + e.getMessage());
         } catch (Exception e) {
-            writeToLog("Exception при чтении Parcel: " + e.getMessage());
+            // Игнорируем ошибки кэша
         } finally {
             data.recycle();
             reply.recycle();
@@ -208,6 +272,7 @@ public class MainActivity extends Activity {
         return false;
     }
 
+    // --- Логика логов ---
     private File getNextLogFile() {
         if (logDir == null) return null;
         int maxIndex = 0;

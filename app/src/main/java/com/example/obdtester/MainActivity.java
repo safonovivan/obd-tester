@@ -6,9 +6,12 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.ServiceConnection;
 import android.graphics.Color;
+import android.graphics.Typeface;
 import android.os.Binder;
 import android.os.Bundle;
+import android.os.Handler;
 import android.os.IBinder;
+import android.os.Looper;
 import android.os.Parcel;
 import android.os.RemoteException;
 import android.view.Gravity;
@@ -24,10 +27,19 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 public class MainActivity extends Activity {
-    private TextView tvSpeed, tvCoolant, tvGear, tvTransTemp, tvOutTemp, tvParktronic;
+    // UI элементы
+    private TextView tvSpeed, tvGear;
+    private TextView tvCoolant, tvTransTemp, tvOutTemp, tvVoltage;
+    private TextView tvDoorDriver, tvDoorPass, tvDoorRL, tvDoorRR, tvDoorTrunk;
+    
+    // Сервис и данные
     private IBinder bcmService;
     private boolean isServiceConnected = false;
     private final String CLIENT_NAME = "OBDTester-" + java.util.UUID.randomUUID().toString();
+    private Handler handler = new Handler(Looper.getMainLooper());
+
+    // Для чтения кэша (АКБ)
+    private int[] cachedData = new int[179];
 
     // --- Переменные для логирования ---
     private File logFile;
@@ -38,78 +50,108 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-
         logDir = getExternalFilesDir(null);
 
-        // --- Настройка UI ---
-        LinearLayout mainLayout = new LinearLayout(this);
-        mainLayout.setOrientation(LinearLayout.VERTICAL);
-        mainLayout.setBackgroundColor(Color.BLACK);
-        mainLayout.setPadding(40, 20, 40, 20);
-        mainLayout.setGravity(Gravity.CENTER);
+        // --- ГЛАВНЫЙ КАРКАС ---
+        LinearLayout rootLayout = new LinearLayout(this);
+        rootLayout.setOrientation(LinearLayout.HORIZONTAL); // Горизонтально (3 колонки)
+        rootLayout.setBackgroundColor(Color.BLACK);
+        rootLayout.setPadding(20, 20, 20, 20);
 
-        // 1. Скорость
+        // === ЛЕВАЯ КОЛОНКА (Скорость и Передача) ===
+        LinearLayout leftCol = new LinearLayout(this);
+        leftCol.setOrientation(LinearLayout.VERTICAL);
+        leftCol.setGravity(Gravity.CENTER);
+        LinearLayout.LayoutParams leftParams = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f);
+        leftCol.setLayoutParams(leftParams);
+
         tvSpeed = new TextView(this);
         tvSpeed.setTextColor(Color.WHITE);
-        tvSpeed.setTextSize(90);
+        tvSpeed.setTextSize(100);
+        tvSpeed.setTypeface(null, Typeface.BOLD);
         tvSpeed.setGravity(Gravity.CENTER);
-        tvSpeed.setText("0 км/ч");
+        tvSpeed.setText("0");
 
-        // 2. Передача и ОЖ
-        LinearLayout middleLayout = new LinearLayout(this);
-        middleLayout.setOrientation(LinearLayout.HORIZONTAL);
-        middleLayout.setGravity(Gravity.CENTER);
-        middleLayout.setPadding(0, 20, 0, 20);
+        TextView tvSpeedLabel = new TextView(this);
+        tvSpeedLabel.setTextColor(Color.GRAY);
+        tvSpeedLabel.setTextSize(30);
+        tvSpeedLabel.setGravity(Gravity.CENTER);
+        tvSpeedLabel.setText("км/ч");
 
         tvGear = new TextView(this);
         tvGear.setTextColor(Color.GREEN);
-        tvGear.setTextSize(60);
-        tvGear.setPadding(0, 0, 50, 0);
+        tvGear.setTextSize(80);
+        tvGear.setTypeface(null, Typeface.BOLD);
+        tvGear.setGravity(Gravity.CENTER);
+        tvGear.setPadding(0, 30, 0, 0);
         tvGear.setText("P");
 
-        tvCoolant = new TextView(this);
-        tvCoolant.setTextColor(Color.WHITE);
-        tvCoolant.setTextSize(60);
-        tvCoolant.setText("ОЖ: -- °C");
+        leftCol.addView(tvSpeed);
+        leftCol.addView(tvSpeedLabel);
+        leftCol.addView(tvGear);
 
-        middleLayout.addView(tvGear);
-        middleLayout.addView(tvCoolant);
+        // === ЦЕНТРАЛЬНАЯ КОЛОНКА (Температуры и АКБ) ===
+        LinearLayout centerCol = new LinearLayout(this);
+        centerCol.setOrientation(LinearLayout.VERTICAL);
+        centerCol.setGravity(Gravity.CENTER_VERTICAL);
+        centerCol.setPadding(20, 0, 20, 0);
+        LinearLayout.LayoutParams centerParams = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f);
+        centerCol.setLayoutParams(centerParams);
 
-        // 3. Нижняя строка (За бортом и АКПП)
-        LinearLayout bottomLayout = new LinearLayout(this);
-        bottomLayout.setOrientation(LinearLayout.HORIZONTAL);
-        bottomLayout.setGravity(Gravity.CENTER);
+        tvCoolant = createDataRow(centerCol, "ОЖ:", "-- °C", Color.WHITE);
+        tvTransTemp = createDataRow(centerCol, "АКПП:", "-- °C", Color.WHITE);
+        tvOutTemp = createDataRow(centerCol, "За бортом:", "-- °C", Color.LTGRAY);
+        tvVoltage = createDataRow(centerCol, "АКБ:", "-- В", Color.YELLOW);
 
-        tvOutTemp = new TextView(this);
-        tvOutTemp.setTextColor(Color.LTGRAY);
-        tvOutTemp.setTextSize(35);
-        tvOutTemp.setPadding(0, 0, 40, 0);
-        tvOutTemp.setText("За бортом: -- °C");
+        // === ПРАВАЯ КОЛОНКА (Двери и Багажник) ===
+        LinearLayout rightCol = new LinearLayout(this);
+        rightCol.setOrientation(LinearLayout.VERTICAL);
+        rightCol.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout.LayoutParams rightParams = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f);
+        rightCol.setLayoutParams(rightParams);
 
-        tvTransTemp = new TextView(this);
-        tvTransTemp.setTextColor(Color.LTGRAY);
-        tvTransTemp.setTextSize(35);
-        tvTransTemp.setText("АКПП: -- °C");
+        tvDoorDriver = createDataRow(rightCol, "Водитель:", "Закрыто", Color.LTGRAY);
+        tvDoorPass = createDataRow(rightCol, "Пассажир:", "Закрыто", Color.LTGRAY);
+        tvDoorRL = createDataRow(rightCol, "Зад. левая:", "Закрыто", Color.LTGRAY);
+        tvDoorRR = createDataRow(rightCol, "Зад. правая:", "Закрыто", Color.LTGRAY);
+        tvDoorTrunk = createDataRow(rightCol, "Багажник:", "Закрыто", Color.LTGRAY);
 
-        bottomLayout.addView(tvOutTemp);
-        bottomLayout.addView(tvTransTemp);
+        // Собираем всё вместе
+        rootLayout.addView(leftCol);
+        rootLayout.addView(centerCol);
+        rootLayout.addView(rightCol);
+        setContentView(rootLayout);
 
-        // 4. Статус парктроников
-        tvParktronic = new TextView(this);
-        tvParktronic.setTextColor(Color.DKGRAY);
-        tvParktronic.setTextSize(40);
-        tvParktronic.setGravity(Gravity.CENTER);
-        tvParktronic.setPadding(0, 20, 0, 0);
-        tvParktronic.setText("ПАРКТРОНИК: ВЫКЛ");
-
-        mainLayout.addView(tvSpeed);
-        mainLayout.addView(middleLayout);
-        mainLayout.addView(bottomLayout);
-        mainLayout.addView(tvParktronic);
-
-        setContentView(mainLayout);
-
+        // Подключаемся к BCM
         bindToBcmService();
+
+        // Запускаем чтение кэша (АКБ) каждые 2 секунды
+        handler.postDelayed(cacheRunnable, 2000);
+    }
+
+    // Вспомогательная функция для создания строк "Название: Значение"
+    private TextView createDataRow(LinearLayout parent, String label, String defaultValue, int valueColor) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setPadding(0, 15, 0, 15);
+
+        TextView tvLabel = new TextView(this);
+        tvLabel.setTextColor(Color.GRAY);
+        tvLabel.setTextSize(35);
+        tvLabel.setText(label);
+        tvLabel.setWidth(250); // Фиксированная ширина для ровности
+
+        TextView tvValue = new TextView(this);
+        tvValue.setTextColor(valueColor);
+        tvValue.setTextSize(35);
+        tvValue.setTypeface(null, Typeface.BOLD);
+        tvValue.setText(defaultValue);
+
+        row.addView(tvLabel);
+        row.addView(tvValue);
+        parent.addView(row);
+        
+        return tvValue; // Возвращаем само поле со значением, чтобы его обновлять
     }
 
     private void bindToBcmService() {
@@ -118,11 +160,9 @@ public class MainActivity extends Activity {
                 "com.adayo.midware.bcmservice",
                 "com.adayo.midware.bcmservice.Controller.BcmService"
         ));
-
         try {
             bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE);
         } catch (Exception e) {
-            tvSpeed.setText("Ошибка связи");
             writeToLog("ОШИБКА bindService: " + e.toString());
         }
     }
@@ -147,7 +187,6 @@ public class MainActivity extends Activity {
         public void onServiceDisconnected(ComponentName name) {
             bcmService = null;
             isServiceConnected = false;
-            writeToLog("=== BCM СЛУЖБА ОТКЛЮЧЕНА ===");
         }
     };
 
@@ -159,6 +198,7 @@ public class MainActivity extends Activity {
                 String signalName = data.readString();
                 final int signalValue = data.readInt();
 
+                // Пишем всё подряд в лог
                 String time = timeFormat.format(new Date());
                 writeToLog(String.format(Locale.US, "[%s] СОБЫТИЕ: %s = %d", time, signalName, signalValue));
 
@@ -180,23 +220,7 @@ public class MainActivity extends Activity {
 
         switch (signalName) {
             case "VCU_VehSpd":
-                tvSpeed.setText(String.format(Locale.US, "%d км/ч", value));
-                break;
-                
-            case "BCM_Coolant_R":
-                if (value > 120 || value <= 0) {
-                    // Игнорируем мусор и нули
-                } else {
-                    tvCoolant.setText(String.format(Locale.US, "ОЖ: %d °C", value));
-                }
-                break;
-                
-            case "BCM_TRANS_OIL_TEMP_R":
-                if (value > 150 || value <= 0) {
-                    // Игнорируем мусор
-                } else {
-                    tvTransTemp.setText(String.format(Locale.US, "АКПП: %d °C", value));
-                }
+                tvSpeed.setText(String.valueOf(value));
                 break;
                 
             case "BCM_VCU_GearSts_R":
@@ -208,37 +232,111 @@ public class MainActivity extends Activity {
                 tvGear.setText(gearText);
                 break;
                 
+            case "BCM_Coolant_R":
+                if (value > 0 && value <= 120) tvCoolant.setText(String.format(Locale.US, "%d °C", value));
+                break;
+                
+            case "BCM_TRANS_OIL_TEMP_R":
+                if (value > 0 && value <= 150) tvTransTemp.setText(String.format(Locale.US, "%d °C", value));
+                break;
+                
             case "BCM_Ext_Temp_R":
-                // Отсекаем глюки (-40 и 87), которые мы видели в логе
-                if (value == -40 || value == 87 || value < -40 || value > 50) {
-                    // Игнорируем
-                } else {
-                    tvOutTemp.setText(String.format(Locale.US, "За бортом: %d °C", value));
-                }
+                if (value > -40 && value < 50) tvOutTemp.setText(String.format(Locale.US, "%d °C", value));
                 break;
 
-            case "PAS_RPAS_SysWorkSts_R":
-                // Статус работы парктроников (0 - выкл, 1 - вкл)
-                if (value == 1) {
-                    tvParktronic.setTextColor(Color.YELLOW);
-                    tvParktronic.setText("ПАРКТРОНИК: ВКЛ");
-                } else {
-                    tvParktronic.setTextColor(Color.DKGRAY);
-                    tvParktronic.setText("ПАРКТРОНИК: ВЫКЛ");
-                }
+            case "BCM_DriverDoorSts":
+                updateDoorState(tvDoorDriver, value);
+                break;
+            case "BCM_PassengerDoorSts":
+                updateDoorState(tvDoorPass, value);
+                break;
+            case "BCM_LRDoorSts":
+                updateDoorState(tvDoorRL, value);
+                break;
+            case "BCM_RRDoorSts":
+                updateDoorState(tvDoorRR, value);
+                break;
+            case "BCM_RearLidSts":
+                updateDoorState(tvDoorTrunk, value);
                 break;
 
-            case "PAS_RPASChime_R":
-                // Пищалка парктроника. Если > 0, значит видит препятствие
-                if (value > 0) {
-                    tvParktronic.setTextColor(Color.RED);
-                    tvParktronic.setText("ПАРКТРОНИК: СТОП!");
-                } else {
-                    // Если пищалка замолкла, но система работает, возвращаем желтый
-                    tvParktronic.setTextColor(Color.YELLOW);
-                    tvParktronic.setText("ПАРКТРОНИК: ВКЛ");
+            // Отлов напряжения через события (если они придут)
+            case "MTR_GWE_U_BATT_R":
+            case "BCM_InputVoltForBCM_R":
+                // Обычно напряжение приходит в милливольтах (например, 12500 = 12.5 В)
+                double volts = value / 1000.0;
+                if (volts > 5.0 && volts < 20.0) {
+                    tvVoltage.setText(String.format(Locale.US, "%.1f В", volts));
+                } else if (value > 5 && value < 20) {
+                    // Если пришло сразу в вольтах
+                    tvVoltage.setText(String.format(Locale.US, "%d В", value));
                 }
                 break;
+        }
+    }
+
+    // Вспомогательный метод для дверей
+    private void updateDoorState(TextView tv, int value) {
+        if (value == 1 || value == 2 || value == 3) { // 1 или другие ненулевые значения = открыто
+            tv.setText("ОТКРЫТО");
+            tv.setTextColor(Color.RED);
+        } else {
+            tv.setText("Закрыто");
+            tv.setTextColor(Color.LTGRAY);
+        }
+    }
+
+    // --- ЧТЕНИЕ КЭША ДЛЯ НАПРЯЖЕНИЯ АКБ ---
+    private Runnable cacheRunnable = new Runnable() {
+        @Override
+        public void run() {
+            if (isServiceConnected && bcmService != null) {
+                readBcmCache();
+            }
+            handler.postDelayed(this, 2000); // Каждые 2 секунды
+        }
+    };
+
+    private void readBcmCache() {
+        Parcel data = Parcel.obtain();
+        Parcel reply = Parcel.obtain();
+        try {
+            data.writeInterfaceToken("com.adayo.module.bcmproxy.IBcmServiceAIDL");
+            boolean transactSuccess = bcmService.transact(4, data, reply, 0);
+            
+            if (transactSuccess) {
+                reply.readException();
+                int successFlag = reply.readInt();
+                if (successFlag == 1 && reply.dataAvail() == 716) {
+                    for (int i = 0; i < 179; i++) {
+                        cachedData[i] = reply.readInt();
+                    }
+                    
+                    // Пытаемся вытащить напряжение (индекс 59 из реверса M6Drive)
+                    int rawVolts = cachedData[59];
+                    if (rawVolts != 0) {
+                        // Если напряжение в милливольтах (например, 12500)
+                        if (rawVolts > 1000) {
+                            final double v = rawVolts / 1000.0;
+                            if (v > 5 && v < 20) {
+                                runOnUiThread(new Runnable() {
+                                    public void run() { tvVoltage.setText(String.format(Locale.US, "%.1f В", v)); }
+                                });
+                            }
+                        } else if (rawVolts > 5 && rawVolts < 20) {
+                            // Если сразу в вольтах
+                            final int v = rawVolts;
+                            runOnUiThread(new Runnable() {
+                                public void run() { tvVoltage.setText(String.format(Locale.US, "%d В", v)); }
+                            });
+                        }
+                    }
+                }
+            }
+        } catch (Exception ignored) {
+        } finally {
+            data.recycle();
+            reply.recycle();
         }
     }
 
@@ -250,7 +348,6 @@ public class MainActivity extends Activity {
             data.writeInterfaceToken("com.adayo.module.bcmproxy.IBcmServiceAIDL");
             data.writeString(CLIENT_NAME);
             data.writeStrongBinder(bcmCallback);
-
             boolean transactSuccess = bcmService.transact(3, data, reply, 0);
             if (transactSuccess) {
                 reply.readException();

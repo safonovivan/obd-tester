@@ -1,15 +1,12 @@
 package com.example.obdtester;
 
 import android.app.Activity;
-import android.content.BroadcastReceiver;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
-import android.content.IntentFilter;
 import android.content.ServiceConnection;
 import android.graphics.Color;
 import android.graphics.Typeface;
-import android.os.BatteryManager;
 import android.os.Binder;
 import android.os.Bundle;
 import android.os.Handler;
@@ -20,9 +17,7 @@ import android.os.RemoteException;
 import android.view.Gravity;
 import android.widget.LinearLayout;
 import android.widget.TextView;
-import java.io.BufferedReader;
 import java.io.File;
-import java.io.FileReader;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.text.SimpleDateFormat;
@@ -43,7 +38,7 @@ public class MainActivity extends Activity {
     private final String CLIENT_NAME = "OBDTester-" + java.util.UUID.randomUUID().toString();
     private Handler handler = new Handler(Looper.getMainLooper());
 
-    // Для чтения кэша (если понадобится)
+    // Для чтения кэша (АКБ)
     private int[] cachedData = new int[179];
 
     // --- Переменные для логирования ---
@@ -59,11 +54,11 @@ public class MainActivity extends Activity {
 
         // --- ГЛАВНЫЙ КАРКАС ---
         LinearLayout rootLayout = new LinearLayout(this);
-        rootLayout.setOrientation(LinearLayout.HORIZONTAL);
+        rootLayout.setOrientation(LinearLayout.HORIZONTAL); // Горизонтально (3 колонки)
         rootLayout.setBackgroundColor(Color.BLACK);
         rootLayout.setPadding(20, 20, 20, 20);
 
-        // === ЛЕВАЯ КОЛОНКА ===
+        // === ЛЕВАЯ КОЛОНКА (Скорость и Передача) ===
         LinearLayout leftCol = new LinearLayout(this);
         leftCol.setOrientation(LinearLayout.VERTICAL);
         leftCol.setGravity(Gravity.CENTER);
@@ -95,7 +90,7 @@ public class MainActivity extends Activity {
         leftCol.addView(tvSpeedLabel);
         leftCol.addView(tvGear);
 
-        // === ЦЕНТРАЛЬНАЯ КОЛОНКА ===
+        // === ЦЕНТРАЛЬНАЯ КОЛОНКА (Температуры и АКБ) ===
         LinearLayout centerCol = new LinearLayout(this);
         centerCol.setOrientation(LinearLayout.VERTICAL);
         centerCol.setGravity(Gravity.CENTER_VERTICAL);
@@ -108,7 +103,7 @@ public class MainActivity extends Activity {
         tvOutTemp = createDataRow(centerCol, "За бортом:", "-- °C", Color.LTGRAY);
         tvVoltage = createDataRow(centerCol, "АКБ:", "-- В", Color.YELLOW);
 
-        // === ПРАВАЯ КОЛОНКА ===
+        // === ПРАВАЯ КОЛОНКА (Двери и Багажник) ===
         LinearLayout rightCol = new LinearLayout(this);
         rightCol.setOrientation(LinearLayout.VERTICAL);
         rightCol.setGravity(Gravity.CENTER_VERTICAL);
@@ -121,6 +116,7 @@ public class MainActivity extends Activity {
         tvDoorRR = createDataRow(rightCol, "Зад. правая:", "Закрыто", Color.LTGRAY);
         tvDoorTrunk = createDataRow(rightCol, "Багажник:", "Закрыто", Color.LTGRAY);
 
+        // Собираем всё вместе
         rootLayout.addView(leftCol);
         rootLayout.addView(centerCol);
         rootLayout.addView(rightCol);
@@ -129,15 +125,11 @@ public class MainActivity extends Activity {
         // Подключаемся к BCM
         bindToBcmService();
 
-        // Регистрируем приемник системных событий АКБ
-        IntentFilter ifilter = new IntentFilter(Intent.ACTION_BATTERY_CHANGED);
-        registerReceiver(batteryReceiver, ifilter);
-
-        // Запускаем чтение файла АКБ через Root каждые 3 секунды (на всякий случай)
-        handler.postDelayed(rootBatteryRunnable, 3000);
+        // Запускаем чтение кэша (АКБ) каждые 2 секунды
+        handler.postDelayed(cacheRunnable, 2000);
     }
 
-    // Вспомогательная функция
+    // Вспомогательная функция для создания строк "Название: Значение"
     private TextView createDataRow(LinearLayout parent, String label, String defaultValue, int valueColor) {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
@@ -147,7 +139,7 @@ public class MainActivity extends Activity {
         tvLabel.setTextColor(Color.GRAY);
         tvLabel.setTextSize(35);
         tvLabel.setText(label);
-        tvLabel.setWidth(250);
+        tvLabel.setWidth(250); // Фиксированная ширина для ровности
 
         TextView tvValue = new TextView(this);
         tvValue.setTextColor(valueColor);
@@ -159,61 +151,7 @@ public class MainActivity extends Activity {
         row.addView(tvValue);
         parent.addView(row);
         
-        return tvValue;
-    }
-
-    // --- ПОЛУЧЕНИЕ НАПРЯЖЕНИЯ ЧЕРЕЗ ANDROID BATTERY MANAGER ---
-    private BroadcastReceiver batteryReceiver = new BroadcastReceiver() {
-        @Override
-        public void onReceive(Context context, Intent intent) {
-            // Получаем напряжение в милливольтах
-            int voltage = intent.getIntExtra(BatteryManager.EXTRA_VOLTAGE, -1);
-            if (voltage > 0) {
-                // Если напряжение в милливольтах (например, 12500 = 12.5В)
-                if (voltage > 1000) {
-                    double volts = voltage / 1000.0;
-                    tvVoltage.setText(String.format(Locale.US, "%.1f В", volts));
-                } else if (voltage > 3 && voltage < 20) {
-                    // Если вдруг в вольтах
-                    tvVoltage.setText(String.format(Locale.US, "%d В", voltage));
-                }
-            }
-        }
-    };
-
-    // --- ЧТЕНИЕ ФАЙЛА ЧЕРЕЗ ROOT ---
-    private Runnable rootBatteryRunnable = new Runnable() {
-        @Override
-        public void run() {
-            readRootBatteryFile();
-            handler.postDelayed(this, 3000);
-        }
-    };
-
-    private void readRootBatteryFile() {
-        String[] paths = {
-                "/sys/class/power_supply/battery/voltage_now",
-                "/sys/class/power_supply/ac/voltage_now",
-                "/sys/class/power_supply/usb/voltage_now"
-        };
-        for (String path : paths) {
-            try {
-                BufferedReader br = new BufferedReader(new FileReader(path));
-                String line = br.readLine();
-                br.close();
-                if (line != null) {
-                    long microVolts = Long.parseLong(line.trim());
-                    // Если файл отдает микровольты (12500000 = 12.5В)
-                    double volts = microVolts / 1000000.0;
-                    if (volts > 5.0 && volts < 30.0) {
-                        tvVoltage.setText(String.format(Locale.US, "%.1f В", volts));
-                        return; // Нашли, выходим
-                    }
-                }
-            } catch (Exception ignored) {
-                // Файла нет, идем дальше
-            }
-        }
+        return tvValue; // Возвращаем само поле со значением, чтобы его обновлять
     }
 
     private void bindToBcmService() {
@@ -260,6 +198,7 @@ public class MainActivity extends Activity {
                 String signalName = data.readString();
                 final int signalValue = data.readInt();
 
+                // Пишем всё подряд в лог
                 String time = timeFormat.format(new Date());
                 writeToLog(String.format(Locale.US, "[%s] СОБЫТИЕ: %s = %d", time, signalName, signalValue));
 
@@ -320,16 +259,84 @@ public class MainActivity extends Activity {
             case "BCM_RearLidSts":
                 updateDoorState(tvDoorTrunk, value);
                 break;
+
+            // Отлов напряжения через события (если они придут)
+            case "MTR_GWE_U_BATT_R":
+            case "BCM_InputVoltForBCM_R":
+                // Обычно напряжение приходит в милливольтах (например, 12500 = 12.5 В)
+                double volts = value / 1000.0;
+                if (volts > 5.0 && volts < 20.0) {
+                    tvVoltage.setText(String.format(Locale.US, "%.1f В", volts));
+                } else if (value > 5 && value < 20) {
+                    // Если пришло сразу в вольтах
+                    tvVoltage.setText(String.format(Locale.US, "%d В", value));
+                }
+                break;
         }
     }
 
+    // Вспомогательный метод для дверей
     private void updateDoorState(TextView tv, int value) {
-        if (value != 0) {
+        if (value == 1 || value == 2 || value == 3) { // 1 или другие ненулевые значения = открыто
             tv.setText("ОТКРЫТО");
             tv.setTextColor(Color.RED);
         } else {
             tv.setText("Закрыто");
             tv.setTextColor(Color.LTGRAY);
+        }
+    }
+
+    // --- ЧТЕНИЕ КЭША ДЛЯ НАПРЯЖЕНИЯ АКБ ---
+    private Runnable cacheRunnable = new Runnable() {
+        @Override
+        public void run() {
+            if (isServiceConnected && bcmService != null) {
+                readBcmCache();
+            }
+            handler.postDelayed(this, 2000); // Каждые 2 секунды
+        }
+    };
+
+    private void readBcmCache() {
+        Parcel data = Parcel.obtain();
+        Parcel reply = Parcel.obtain();
+        try {
+            data.writeInterfaceToken("com.adayo.module.bcmproxy.IBcmServiceAIDL");
+            boolean transactSuccess = bcmService.transact(4, data, reply, 0);
+            
+            if (transactSuccess) {
+                reply.readException();
+                int successFlag = reply.readInt();
+                if (successFlag == 1 && reply.dataAvail() == 716) {
+                    for (int i = 0; i < 179; i++) {
+                        cachedData[i] = reply.readInt();
+                    }
+                    
+                    // Пытаемся вытащить напряжение (индекс 59 из реверса M6Drive)
+                    int rawVolts = cachedData[59];
+                    if (rawVolts != 0) {
+                        // Если напряжение в милливольтах (например, 12500)
+                        if (rawVolts > 1000) {
+                            final double v = rawVolts / 1000.0;
+                            if (v > 5 && v < 20) {
+                                runOnUiThread(new Runnable() {
+                                    public void run() { tvVoltage.setText(String.format(Locale.US, "%.1f В", v)); }
+                                });
+                            }
+                        } else if (rawVolts > 5 && rawVolts < 20) {
+                            // Если сразу в вольтах
+                            final int v = rawVolts;
+                            runOnUiThread(new Runnable() {
+                                public void run() { tvVoltage.setText(String.format(Locale.US, "%d В", v)); }
+                            });
+                        }
+                    }
+                }
+            }
+        } catch (Exception ignored) {
+        } finally {
+            data.recycle();
+            reply.recycle();
         }
     }
 
@@ -390,12 +397,5 @@ public class MainActivity extends Activity {
             writer.append(message).append("\n");
             writer.close();
         } catch (IOException ignored) {}
-    }
-
-    @Override
-    protected void onDestroy() {
-        super.onDestroy();
-        unregisterReceiver(batteryReceiver);
-        handler.removeCallbacksAndMessages(null);
     }
 }

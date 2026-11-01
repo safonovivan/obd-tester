@@ -8,13 +8,10 @@ import android.content.ServiceConnection;
 import android.graphics.Color;
 import android.os.Binder;
 import android.os.Bundle;
-import android.os.Handler;
 import android.os.IBinder;
-import android.os.Looper;
 import android.os.Parcel;
 import android.os.RemoteException;
-import android.view.View;
-import android.widget.Button;
+import android.view.Gravity;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 import java.io.File;
@@ -27,65 +24,81 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 public class MainActivity extends Activity {
-    private TextView textView;
-    private Handler handler = new Handler(Looper.getMainLooper());
-    private boolean isRunning = false;
+    private TextView tvSpeed, tvCoolant, tvGear, tvSteering, tvDoor, tvTransTemp;
+    private IBinder bcmService;
+    private boolean isServiceConnected = false;
+    private final String CLIENT_NAME = "OBDTester-" + java.util.UUID.randomUUID().toString();
+
+    // --- Переменные для логирования ---
     private File logFile;
     private File logDir;
     private SimpleDateFormat timeFormat = new SimpleDateFormat("HH:mm:ss.SSS", Locale.US);
     private static final long MAX_LOG_SIZE = 5 * 1024 * 1024; // 5MB
 
-    private IBinder bcmService;
-    private boolean isServiceConnected = false;
-    private int[] cachedData = new int[179];
-    
-    // Строка-идентификатор нашего клиента (как в M6Drive)
-    private final String CLIENT_NAME = "OBDTester-" + java.util.UUID.randomUUID().toString();
-
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        // --- Настройка UI ---
-        LinearLayout layout = new LinearLayout(this);
-        layout.setOrientation(LinearLayout.VERTICAL);
-        layout.setBackgroundColor(Color.BLACK);
-        layout.setPadding(30, 30, 30, 30);
-
-        LinearLayout buttonLayout = new LinearLayout(this);
-        buttonLayout.setOrientation(LinearLayout.HORIZONTAL);
-
-        Button btnStart = new Button(this);
-        btnStart.setText("СТАРТ");
-        btnStart.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) { startPolling(); }
-        });
-
-        Button btnStop = new Button(this);
-        btnStop.setText("СТОП");
-        btnStop.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) { stopPolling(); }
-        });
-
-        buttonLayout.addView(btnStart);
-        buttonLayout.addView(btnStop);
-
-        textView = new TextView(this);
-        textView.setTextColor(Color.WHITE);
-        textView.setTextSize(20);
-        textView.setPadding(0, 30, 0, 0);
-        textView.setText("Ожидание...\nПопытка подключения к BCM Service...");
-
-        layout.addView(buttonLayout);
-        layout.addView(textView);
-        setContentView(layout);
-
-        // --- Настройка файла лога ---
+        // --- Настройка папки для логов ---
         logDir = getExternalFilesDir(null);
 
-        // --- Инициализация AIDL подключения ---
+        // --- Настройка UI (Дашборд) ---
+        LinearLayout mainLayout = new LinearLayout(this);
+        mainLayout.setOrientation(LinearLayout.VERTICAL);
+        mainLayout.setBackgroundColor(Color.BLACK);
+        mainLayout.setPadding(40, 20, 40, 20);
+        mainLayout.setGravity(Gravity.CENTER);
+
+        tvSpeed = new TextView(this);
+        tvSpeed.setTextColor(Color.WHITE);
+        tvSpeed.setTextSize(80);
+        tvSpeed.setGravity(Gravity.CENTER);
+        tvSpeed.setText("0 км/ч");
+
+        LinearLayout middleLayout = new LinearLayout(this);
+        middleLayout.setOrientation(LinearLayout.HORIZONTAL);
+        middleLayout.setGravity(Gravity.CENTER);
+        middleLayout.setPadding(0, 30, 0, 30);
+
+        tvGear = new TextView(this);
+        tvGear.setTextColor(Color.GREEN);
+        tvGear.setTextSize(50);
+        tvGear.setPadding(0, 0, 50, 0);
+        tvGear.setText("P");
+
+        tvCoolant = new TextView(this);
+        tvCoolant.setTextColor(Color.WHITE);
+        tvCoolant.setTextSize(50);
+        tvCoolant.setText("ОЖ: -- °C");
+
+        middleLayout.addView(tvGear);
+        middleLayout.addView(tvCoolant);
+
+        LinearLayout bottomLayout = new LinearLayout(this);
+        bottomLayout.setOrientation(LinearLayout.HORIZONTAL);
+        bottomLayout.setGravity(Gravity.CENTER);
+
+        tvDoor = new TextView(this);
+        tvDoor.setTextColor(Color.LTGRAY);
+        tvDoor.setTextSize(30);
+        tvDoor.setPadding(0, 0, 50, 0);
+        tvDoor.setText("Двери: Закрыты");
+
+        tvTransTemp = new TextView(this);
+        tvTransTemp.setTextColor(Color.LTGRAY);
+        tvTransTemp.setTextSize(30);
+        tvTransTemp.setText("АКПП: -- °C");
+
+        bottomLayout.addView(tvDoor);
+        bottomLayout.addView(tvTransTemp);
+
+        mainLayout.addView(tvSpeed);
+        mainLayout.addView(middleLayout);
+        mainLayout.addView(bottomLayout);
+
+        setContentView(mainLayout);
+
+        // Подключаемся к службе BCM
         bindToBcmService();
     }
 
@@ -97,14 +110,10 @@ public class MainActivity extends Activity {
         ));
 
         try {
-            boolean bound = bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE);
-            if (!bound) {
-                writeToLog("ОШИБКА: Система отказала в bindService");
-                textView.setText("Ошибка: bindService не удался");
-            }
+            bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE);
         } catch (Exception e) {
-            writeToLog("ИСКЛЮЧЕНИЕ при bindService: " + e.toString());
-            textView.setText("Ошибка подключения:\n" + e.getMessage());
+            tvSpeed.setText("Ошибка связи");
+            writeToLog("ОШИБКА bindService: " + e.toString());
         }
     }
 
@@ -112,32 +121,15 @@ public class MainActivity extends Activity {
         @Override
         public void onServiceConnected(ComponentName name, IBinder service) {
             bcmService = service;
-            
-            // Проверяем интерфейс (защита от подмены)
             try {
-                if (!"com.adayo.module.bcmproxy.IBcmServiceAIDL".equals(service.getInterfaceDescriptor())) {
-                    writeToLog("ОШИБКА: Неверный интерфейс сервиса: " + service.getInterfaceDescriptor());
-                    return;
-                }
+                if (!"com.adayo.module.bcmproxy.IBcmServiceAIDL".equals(service.getInterfaceDescriptor())) return;
             } catch (RemoteException e) {
-                writeToLog("ОШИБКА RemoteException при получении дескриптора");
                 return;
             }
 
-            // 1. СНАЧАЛА ПОДПИСЫВАЕМСЯ (transact 3)
-            boolean subSuccess = subscribeToBcm();
-            
-            if (subSuccess) {
+            if (subscribeToBcm()) {
                 isServiceConnected = true;
-                writeToLog("УСПЕХ: Подписка на BCM оформлена");
-                runOnUiThread(new Runnable() {
-                    public void run() { textView.setText("Служба BCM подключена!\nНажмите СТАРТ"); }
-                });
-            } else {
-                writeToLog("ОШИБКА: Не удалось подписаться на BCM");
-                runOnUiThread(new Runnable() {
-                    public void run() { textView.setText("Ошибка подписки на BCM"); }
-                });
+                writeToLog("=== ПОДПИСКА НА BCM ОФОРМЛЕНА ===");
             }
         }
 
@@ -145,34 +137,29 @@ public class MainActivity extends Activity {
         public void onServiceDisconnected(ComponentName name) {
             bcmService = null;
             isServiceConnected = false;
-            writeToLog("ВНИМАНИЕ: Служба BCM отключена");
+            writeToLog("=== BCM СЛУЖБА ОТКЛЮЧЕНА ===");
         }
     };
 
-    // ЭТОТ БЛОК - НАШ ПРИЕМНИК (CALLBACK)
-    // Сюда система будет присылать данные, когда ты откроешь дверь или нажмешь газ
+    // ПРИЕМНИК ДАННЫХ
     private final IBinder bcmCallback = new Binder() {
         @Override
         protected boolean onTransact(int code, Parcel data, Parcel reply, int flags) throws RemoteException {
-            if (code == 1) { // 1 - код события
+            if (code == 1) {
                 data.enforceInterface("com.adayo.module.bcmproxy.IBcmClientCallBack");
-                
-                // Читаем название сигнала (например, "VCU_VehSpd")
                 String signalName = data.readString();
-                // Читаем само значение
-                int signalValue = data.readInt();
-                
-                // Пишем в лог!
+                final int signalValue = data.readInt();
+
+                // 1. ПИШЕМ В ЛОГ
                 String time = timeFormat.format(new Date());
                 writeToLog(String.format(Locale.US, "[%s] СОБЫТИЕ: %s = %d", time, signalName, signalValue));
-                
-                // Если это скорость - выводим на экран
-                if ("VCU_VehSpd".equals(signalName)) {
-                    final String text = "Скорость: " + signalValue + " км/ч";
-                    runOnUiThread(new Runnable() {
-                        public void run() { textView.setText(text); }
-                    });
-                }
+
+                // 2. ОБНОВЛЯЕМ ЭКРАН
+                runOnUiThread(new Runnable() {
+                    public void run() {
+                        updateUI(signalName, signalValue);
+                    }
+                });
 
                 if (reply != null) reply.writeNoException();
                 return true;
@@ -181,24 +168,51 @@ public class MainActivity extends Activity {
         }
     };
 
+    private void updateUI(String signalName, int value) {
+        if (signalName == null) return;
+
+        switch (signalName) {
+            case "VCU_VehSpd":
+                tvSpeed.setText(String.format(Locale.US, "%d км/ч", value));
+                break;
+            case "BCM_Coolant_R":
+                tvCoolant.setText(String.format(Locale.US, "ОЖ: %d °C", value));
+                break;
+            case "BCM_TRANS_OIL_TEMP_R":
+                tvTransTemp.setText(String.format(Locale.US, "АКПП: %d °C", value));
+                break;
+            case "BCM_VCU_GearSts_R":
+                String gearText = "?";
+                if (value == 0) gearText = "P";
+                else if (value == 5) gearText = "D";
+                else if (value == 6) gearText = "N";
+                else if (value == 7) gearText = "R";
+                tvGear.setText(gearText);
+                break;
+            case "BCM_DriverDoorSts":
+                tvDoor.setText(value == 1 ? "Двери: ОТКРЫТЫ" : "Двери: Закрыты");
+                if (value == 1) tvDoor.setTextColor(Color.RED);
+                else tvDoor.setTextColor(Color.LTGRAY);
+                break;
+        }
+    }
+
     private boolean subscribeToBcm() {
         if (bcmService == null) return false;
         Parcel data = Parcel.obtain();
         Parcel reply = Parcel.obtain();
         try {
             data.writeInterfaceToken("com.adayo.module.bcmproxy.IBcmServiceAIDL");
-            data.writeString(CLIENT_NAME); // Имя клиента
-            data.writeStrongBinder(bcmCallback); // Наш приемник
+            data.writeString(CLIENT_NAME);
+            data.writeStrongBinder(bcmCallback);
 
-            // transact(3) - это код подписки
             boolean transactSuccess = bcmService.transact(3, data, reply, 0);
-            
             if (transactSuccess) {
                 reply.readException();
-                return reply.readInt() != 0; // 1 = успех
+                return reply.readInt() != 0;
             }
         } catch (Exception e) {
-            writeToLog("Ошибка при подписке: " + e.toString());
+            writeToLog("Ошибка подписки: " + e.toString());
         } finally {
             data.recycle();
             reply.recycle();
@@ -206,73 +220,7 @@ public class MainActivity extends Activity {
         return false;
     }
 
-    private void startPolling() {
-        if (!isServiceConnected) {
-            textView.setText("Ошибка: Служба BCM еще не подключена.");
-            return;
-        }
-        if (isRunning) return;
-        isRunning = true;
-        writeToLog("=== СТАРТ ОПРОСА ===");
-        handler.post(pollRunnable);
-    }
-
-    private void stopPolling() {
-        isRunning = false;
-        handler.removeCallbacks(pollRunnable);
-        writeToLog("=== СТОП ОПРОСА ===");
-        textView.setText("Опрос остановлен.");
-    }
-
-    private Runnable pollRunnable = new Runnable() {
-        @Override
-        public void run() {
-            if (!isRunning) return;
-            readData();
-            handler.postDelayed(this, 2000); // Раз в 2 секунды
-        }
-    };
-
-    private void readData() {
-        if (bcmService == null) return;
-
-        boolean success = readBcmCache();
-
-        if (success) {
-            // Если мы хотим просто проверить, что кэш живой
-            writeToLog(String.format(Locale.US, "[%s] КЭШ: Val59: %d | Val102: %d", timeFormat.format(new Date()), cachedData[59], cachedData[102]));
-        }
-    }
-
-    private boolean readBcmCache() {
-        Parcel data = Parcel.obtain();
-        Parcel reply = Parcel.obtain();
-        try {
-            data.writeInterfaceToken("com.adayo.module.bcmproxy.IBcmServiceAIDL");
-            
-            // transact(4) - чтение кэша
-            boolean transactSuccess = bcmService.transact(4, data, reply, 0);
-            
-            if (transactSuccess) {
-                reply.readException();
-                int successFlag = reply.readInt();
-                if (successFlag == 1 && reply.dataAvail() == 716) {
-                    for (int i = 0; i < 179; i++) {
-                        cachedData[i] = reply.readInt();
-                    }
-                    return true;
-                }
-            }
-        } catch (Exception e) {
-            // Игнорируем ошибки кэша
-        } finally {
-            data.recycle();
-            reply.recycle();
-        }
-        return false;
-    }
-
-    // --- Логика логов ---
+    // --- ЛОГИКА ЛОГОВ (Наш "Черный ящик") ---
     private File getNextLogFile() {
         if (logDir == null) return null;
         int maxIndex = 0;
@@ -307,14 +255,5 @@ public class MainActivity extends Activity {
             writer.append(message).append("\n");
             writer.close();
         } catch (IOException ignored) {}
-    }
-
-    @Override
-    protected void onDestroy() {
-        super.onDestroy();
-        stopPolling();
-        if (isServiceConnected) {
-            unbindService(serviceConnection);
-        }
     }
 }

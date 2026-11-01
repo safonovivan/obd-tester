@@ -9,9 +9,7 @@ import android.graphics.Color;
 import android.graphics.Typeface;
 import android.os.Binder;
 import android.os.Bundle;
-import android.os.Handler;
 import android.os.IBinder;
-import android.os.Looper;
 import android.os.Parcel;
 import android.os.RemoteException;
 import android.view.Gravity;
@@ -34,10 +32,6 @@ public class MainActivity extends Activity {
     private IBinder bcmService;
     private boolean isServiceConnected = false;
     private final String CLIENT_NAME = "OBDTester-" + java.util.UUID.randomUUID().toString();
-    private Handler handler = new Handler(Looper.getMainLooper());
-
-    private int[] cachedData = new int[179];
-    private int cacheLogCounter = 0; // Счетчик для логов
 
     private File logFile;
     private File logDir;
@@ -126,7 +120,6 @@ public class MainActivity extends Activity {
         setContentView(rootLayout);
 
         bindToBcmService();
-        handler.postDelayed(cacheRunnable, 1000);
     }
 
     private TextView createDataRow(LinearLayout parent, String label, String defaultValue, int valueColor, int textSize, int padding) {
@@ -150,70 +143,6 @@ public class MainActivity extends Activity {
         row.addView(tvValue);
         parent.addView(row);
         return tvValue;
-    }
-
-    private Runnable cacheRunnable = new Runnable() {
-        @Override
-        public void run() {
-            if (isServiceConnected && bcmService != null) {
-                readBcmCache();
-            }
-            handler.postDelayed(this, 2000); // Читаем раз в 2 секунды, чтобы не спамить лог
-        }
-    };
-
-    private void readBcmCache() {
-        Parcel data = Parcel.obtain();
-        Parcel reply = Parcel.obtain();
-        try {
-            data.writeInterfaceToken("com.adayo.module.bcmproxy.IBcmServiceAIDL");
-            boolean transactSuccess = bcmService.transact(4, data, reply, 0);
-            
-            if (transactSuccess) {
-                reply.readException();
-                int successFlag = reply.readInt();
-                int avail = reply.dataAvail();
-
-                // Логируем раз в 10 секунд (каждое 5-е чтение), чтобы не засорять файл
-                if (cacheLogCounter % 5 == 0) {
-                    writeToLog("КЭШ: flag=" + successFlag + " avail=" + avail);
-                }
-
-                if (successFlag == 1 && avail == 716) {
-                    for (int i = 0; i < 179; i++) {
-                        cachedData[i] = reply.readInt();
-                    }
-                    
-                    final int transTemp = cachedData[102];
-                    
-                    // Логируем значение АКПП из кэша
-                    if (cacheLogCounter % 5 == 0) {
-                        writeToLog("КЭШ: Индекс 102 (АКПП) = " + transTemp);
-                    }
-                    cacheLogCounter++;
-
-                    if (transTemp > 0 && transTemp < 150) {
-                        runOnUiThread(new Runnable() {
-                            public void run() {
-                                tvTransTemp.setText(String.format(Locale.US, "%d °C", transTemp));
-                            }
-                        });
-                    }
-                } else {
-                    if (cacheLogCounter % 5 == 0) writeToLog("КЭШ: Неверный размер данных");
-                    cacheLogCounter++;
-                }
-            } else {
-                if (cacheLogCounter % 5 == 0) writeToLog("КЭШ: transact вернул false");
-                cacheLogCounter++;
-            }
-        } catch (Exception e) {
-            if (cacheLogCounter % 5 == 0) writeToLog("КЭШ: Ошибка " + e.toString());
-            cacheLogCounter++;
-        } finally {
-            data.recycle();
-            reply.recycle();
-        }
     }
 
     private void bindToBcmService() {
@@ -273,6 +202,7 @@ public class MainActivity extends Activity {
 
     private void updateUI(String signalName, int value) {
         if (signalName == null) return;
+        
         switch (signalName) {
             case "VCU_VehSpd": 
                 tvSpeed.setText(String.valueOf(value)); 
@@ -370,6 +300,5 @@ public class MainActivity extends Activity {
     @Override
     protected void onDestroy() {
         super.onDestroy();
-        handler.removeCallbacksAndMessages(null);
     }
 }

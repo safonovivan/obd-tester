@@ -27,7 +27,6 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 public class MainActivity extends Activity {
-    // UI элементы (парктроник убран)
     private TextView tvSpeed, tvGear, tvPower;
     private TextView tvCoolant, tvTransTemp, tvOutTemp;
     private TextView tvDoorDriver, tvDoorPass, tvDoorRL, tvDoorRR, tvDoorTrunk;
@@ -38,10 +37,7 @@ public class MainActivity extends Activity {
     private Handler handler = new Handler(Looper.getMainLooper());
 
     private int[] cachedData = new int[179];
-
-    // Переменные парктроников остаются в памяти (для будущего)
-    private int parkL = 0;
-    private int parkR = 0;
+    private int cacheLogCounter = 0; // Счетчик для логов
 
     private File logFile;
     private File logDir;
@@ -162,7 +158,7 @@ public class MainActivity extends Activity {
             if (isServiceConnected && bcmService != null) {
                 readBcmCache();
             }
-            handler.postDelayed(this, 1000);
+            handler.postDelayed(this, 2000); // Читаем раз в 2 секунды, чтобы не спамить лог
         }
     };
 
@@ -176,12 +172,26 @@ public class MainActivity extends Activity {
             if (transactSuccess) {
                 reply.readException();
                 int successFlag = reply.readInt();
-                if (successFlag == 1 && reply.dataAvail() == 716) {
+                int avail = reply.dataAvail();
+
+                // Логируем раз в 10 секунд (каждое 5-е чтение), чтобы не засорять файл
+                if (cacheLogCounter % 5 == 0) {
+                    writeToLog("КЭШ: flag=" + successFlag + " avail=" + avail);
+                }
+
+                if (successFlag == 1 && avail == 716) {
                     for (int i = 0; i < 179; i++) {
                         cachedData[i] = reply.readInt();
                     }
                     
                     final int transTemp = cachedData[102];
+                    
+                    // Логируем значение АКПП из кэша
+                    if (cacheLogCounter % 5 == 0) {
+                        writeToLog("КЭШ: Индекс 102 (АКПП) = " + transTemp);
+                    }
+                    cacheLogCounter++;
+
                     if (transTemp > 0 && transTemp < 150) {
                         runOnUiThread(new Runnable() {
                             public void run() {
@@ -189,9 +199,17 @@ public class MainActivity extends Activity {
                             }
                         });
                     }
+                } else {
+                    if (cacheLogCounter % 5 == 0) writeToLog("КЭШ: Неверный размер данных");
+                    cacheLogCounter++;
                 }
+            } else {
+                if (cacheLogCounter % 5 == 0) writeToLog("КЭШ: transact вернул false");
+                cacheLogCounter++;
             }
-        } catch (Exception ignored) {
+        } catch (Exception e) {
+            if (cacheLogCounter % 5 == 0) writeToLog("КЭШ: Ошибка " + e.toString());
+            cacheLogCounter++;
         } finally {
             data.recycle();
             reply.recycle();
@@ -284,14 +302,6 @@ public class MainActivity extends Activity {
                 else if (value == 2) pwr = "IGN";
                 else if (value == 3) pwr = "RUN";
                 tvPower.setText("PWR: " + pwr);
-                break;
-
-            // ПАРКТРОНИКИ ОСТАЮТСЯ В КОДЕ (просто обновляем переменные в памяти)
-            case "PAS_ObjectSts_RRC_R": 
-                parkR = value; 
-                break;
-            case "PAS_ObjectSts_RLC_R": 
-                parkL = value; 
                 break;
 
             case "BCM_DriverDoorSts": updateDoorState(tvDoorDriver, value); break;

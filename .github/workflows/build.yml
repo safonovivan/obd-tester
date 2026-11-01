@@ -34,8 +34,20 @@ jobs:
     - name: Build with Gradle
       run: gradle build assembleDebug
 
+    - name: Sign APK with Platform Keys
+      run: |
+        # Ищем apksigner в Android SDK (берем последнюю версию build-tools)
+        BUILD_TOOLS=$(ls $ANDROID_HOME/build-tools | sort -V | tail -n 1)
+        APKSIGNER="$ANDROID_HOME/build-tools/$BUILD_TOOLS/apksigner"
+        
+        # Подписываем наш APK
+        $APKSIGNER sign --key keys/platform.pk8 --cert keys/platform.x509.pem --out app/build/outputs/apk/debug/app-signed.apk app/build/outputs/apk/debug/app-debug.apk
+        
+        # Проверяем, что подпись на месте
+        $APKSIGNER verify app/build/outputs/apk/debug/app-signed.apk
+
     - name: Upload APK
       uses: actions/upload-artifact@v4
       with:
-        name: OBD-Tester-APK
-        path: app/build/outputs/apk/debug/app-debug.apk
+        name: OBD-Tester-Signed-APK
+        path: app/build/outputs/apk/debug/app-signed.apk

@@ -16,13 +16,13 @@ import android.os.Looper;
 import android.os.Parcel;
 import android.os.RemoteException;
 import android.view.Gravity;
+import android.view.View;
+import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.TextView;
-import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
-import java.io.InputStreamReader;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.Locale;
@@ -36,12 +36,9 @@ public class MainActivity extends Activity {
     
     private IBinder bcmService;
     private boolean isServiceConnected = false;
-    private final String CLIENT_NAME = "OBDTester-" + java.util.UUID.randomUUID().toString();
-    private Handler handler = new Handler(Looper.getMainLooper());
-
+    private String CLIENT_NAME = "OBDTester-" + java.util.UUID.randomUUID().toString();
+    
     private SharedPreferences prefs;
-    private int[] cachedData = new int[179];
-
     private File logFile;
     private File logDir;
     private SimpleDateFormat timeFormat = new SimpleDateFormat("HH:mm:ss.SSS", Locale.US);
@@ -111,6 +108,7 @@ public class MainActivity extends Activity {
         tvTransTemp = createDataRow(centerCol, "АКПП:", "-- °C", Color.WHITE, 32, 20);
         tvOutTemp = createDataRow(centerCol, "За бортом:", "-- °C", Color.LTGRAY, 32, 20);
         
+        // Восстанавливаем последние значения из памяти
         restoreLastValues();
         
         // === ПРАВАЯ КОЛОНКА ===
@@ -120,11 +118,22 @@ public class MainActivity extends Activity {
         LinearLayout.LayoutParams rightParams = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1.1f);
         rightCol.setLayoutParams(rightParams);
 
-        tvDoorDriver = createDataRow(rightCol, "Водитель:", "Закрыто", Color.LTGRAY, 30, 15);
-        tvDoorPass = createDataRow(rightCol, "Пассажир:", "Закрыто", Color.LTGRAY, 30, 15);
-        tvDoorRL = createDataRow(rightCol, "Зад. левая:", "Закрыто", Color.LTGRAY, 30, 15);
-        tvDoorRR = createDataRow(rightCol, "Зад. правая:", "Закрыто", Color.LTGRAY, 30, 15);
-        tvDoorTrunk = createDataRow(rightCol, "Багажник:", "Закрыто", Color.LTGRAY, 30, 15);
+        tvDoorDriver = createDataRow(rightCol, "Водитель:", "Закрыто", Color.LTGRAY, 28, 12);
+        tvDoorPass = createDataRow(rightCol, "Пассажир:", "Закрыто", Color.LTGRAY, 28, 12);
+        tvDoorRL = createDataRow(rightCol, "Зад. левая:", "Закрыто", Color.LTGRAY, 28, 12);
+        tvDoorRR = createDataRow(rightCol, "Зад. правая:", "Закрыто", Color.LTGRAY, 28, 12);
+        tvDoorTrunk = createDataRow(rightCol, "Багажник:", "Закрыто", Color.LTGRAY, 28, 12);
+
+        // Кнопка ОБНОВИТЬ (для тестов)
+        Button btnRefresh = new Button(this);
+        btnRefresh.setText("ОБНОВИТЬ ДАННЫЕ");
+        btnRefresh.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                reconnectService();
+            }
+        });
+        rightCol.addView(btnRefresh);
 
         rootLayout.addView(leftCol);
         rootLayout.addView(centerCol);
@@ -132,9 +141,6 @@ public class MainActivity extends Activity {
         setContentView(rootLayout);
 
         bindToBcmService();
-
-        // Запускаем чтение кэша через Root каждые 2 секунды
-        handler.postDelayed(rootCacheRunnable, 2000);
     }
 
     private void restoreLastValues() {
@@ -171,94 +177,17 @@ public class MainActivity extends Activity {
         return tvValue;
     }
 
-    // --- ЧТЕНИЕ КЭША ЧЕРЕЗ ROOT ---
-    private Runnable rootCacheRunnable = new Runnable() {
-        @Override
-        public void run() {
-            readCacheViaRoot();
-            handler.postDelayed(this, 2000); // Раз в 2 секунды
+    private void reconnectService() {
+        writeToLog("=== РУЧНОЕ ОБНОВЛЕНИЕ ===");
+        if (bcmService != null) {
+            try {
+                unbindService(serviceConnection);
+            } catch (Exception ignored) {}
         }
-    };
-
-    private void readCacheViaRoot() {
-        new Thread(new Runnable() {
-            @Override
-            public void run() {
-                try {
-                    // Вызов Binder-сервиса через консольную команду под Root
-                    String cmd = "su -c service call com.adayo.midware.bcmservice 4 s16 com.adayo.module.bcmproxy.IBcmServiceAIDL";
-                    Process process = Runtime.getRuntime().exec(cmd);
-                    BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
-                    String line;
-                    StringBuilder sb = new StringBuilder();
-                    while ((line = reader.readLine()) != null) {
-                        sb.append(line);
-                    }
-                    reader.close();
-                    process.waitFor();
-
-                    String output = sb.toString();
-                    // В логе увидим, что вернула команда
-                    writeToLog("ROOT-КЭШ: " + output);
-
-                    // Ищем hex-массив в ответе (обычно он начинается с Result: Parcel(...))
-                    if (output.contains("Result: Parcel")) {
-                        parseRootCacheOutput(output);
-                    }
-                } catch (Exception e) {
-                    writeToLog("Ошибка Root: " + e.toString());
-                }
-            }
-        }).start();
-    }
-
-    // Парсим ответ от service call
-    private void parseRootCacheOutput(String output) {
-        try {
-            // Ищем первую скобку и последнюю
-            int start = output.indexOf('(');
-            int end = output.lastIndexOf(')');
-            if (start == -1 || end == -1) return;
-
-            String hexData = output.substring(start + 1, end).replace(" ", "");
-            
-            // В Android Parcel данные разбиты на слова по 4 байта (8 hex символов)
-            // Первые 8 символов (или около того) - это служебная информация (длина и т.д.)
-            // Нам нужно пропустить заголовок и достать 716 байт данных (179 * 4)
-            
-            // Проверяем, что данных достаточно
-            if (hexData.length() < 716 * 2) return; 
-
-            // Обычно ответ от service call выглядит так: 00000000 00000000 00000000 00000001 ... (дальше сами данные)
-            // Найдем место, где начинаются наши данные. 
-            // В идеале нужно прочитать длину и пропустить заголовок, но для простоты:
-            // Просто берем последние 1432 символа (716 * 2) - это и будут наши 179 int-ов.
-            
-            String dataHex = hexData.substring(hexData.length() - (716 * 2));
-            
-            for (int i = 0; i < 179; i++) {
-                String hexInt = dataHex.substring(i * 8, (i + 1) * 8);
-                // Конвертируем hex в int (Little Endian)
-                int value = (int) Long.parseLong(hexInt.substring(6, 8) + hexInt.substring(4, 6) + hexInt.substring(2, 4) + hexInt.substring(0, 2), 16);
-                cachedData[i] = value;
-            }
-
-            final int transTemp = cachedData[102];
-            if (transTemp > 0 && transTemp < 150) {
-                runOnUiThread(new Runnable() {
-                    public void run() {
-                        tvTransTemp.setText(String.format(Locale.US, "%d °C", transTemp));
-                        prefs.edit().putInt("trans_temp", transTemp).apply();
-                    }
-                });
-            }
-            
-            // В лог для отладки
-            writeToLog("ROOT-КЭШ: АКПП=" + cachedData[102] + " | ОЖ=" + cachedData[59]); // 59 может быть ОЖ или напряжение
-
-        } catch (Exception e) {
-            writeToLog("Ошибка парсинга: " + e.toString());
-        }
+        isServiceConnected = false;
+        bcmService = null;
+        CLIENT_NAME = "OBDTester-" + java.util.UUID.randomUUID().toString(); // Новое имя клиента
+        bindToBcmService();
     }
 
     private void bindToBcmService() {
@@ -426,6 +355,8 @@ public class MainActivity extends Activity {
     @Override
     protected void onDestroy() {
         super.onDestroy();
-        handler.removeCallbacksAndMessages(null);
+        if (bcmService != null) {
+            try { unbindService(serviceConnection); } catch (Exception ignored) {}
+        }
     }
 }

@@ -27,13 +27,10 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 public class MainActivity extends Activity {
-    // Существующие UI элементы
-    private TextView tvSpeed, tvGear;
+    // UI элементы (парктроник убран)
+    private TextView tvSpeed, tvGear, tvPower;
     private TextView tvCoolant, tvTransTemp, tvOutTemp;
     private TextView tvDoorDriver, tvDoorPass, tvDoorRL, tvDoorRR, tvDoorTrunk;
-    
-    // НОВЫЕ UI элементы
-    private TextView tvPower, tvPressure, tvHandbrake, tvParktronic;
     
     private IBinder bcmService;
     private boolean isServiceConnected = false;
@@ -41,6 +38,10 @@ public class MainActivity extends Activity {
     private Handler handler = new Handler(Looper.getMainLooper());
 
     private int[] cachedData = new int[179];
+
+    // Переменные парктроников остаются в памяти (для будущего)
+    private int parkL = 0;
+    private int parkR = 0;
 
     private File logFile;
     private File logDir;
@@ -57,7 +58,7 @@ public class MainActivity extends Activity {
         rootLayout.setBackgroundColor(Color.BLACK);
         rootLayout.setPadding(20, 20, 20, 20);
 
-        // === ЛЕВАЯ КОЛОНКА (Скорость и Передача) ===
+        // === ЛЕВАЯ КОЛОНКА ===
         LinearLayout leftCol = new LinearLayout(this);
         leftCol.setOrientation(LinearLayout.VERTICAL);
         leftCol.setGravity(Gravity.CENTER);
@@ -85,7 +86,6 @@ public class MainActivity extends Activity {
         tvGear.setPadding(0, 30, 0, 0);
         tvGear.setText("P");
 
-        // НОВОЕ: Статус питания
         tvPower = new TextView(this);
         tvPower.setTextColor(Color.LTGRAY);
         tvPower.setTextSize(30);
@@ -99,7 +99,7 @@ public class MainActivity extends Activity {
         leftCol.addView(tvGear);
         leftCol.addView(tvPower);
 
-        // === ЦЕНТРАЛЬНАЯ КОЛОНКА (Температуры и Давление) ===
+        // === ЦЕНТРАЛЬНАЯ КОЛОНКА ===
         LinearLayout centerCol = new LinearLayout(this);
         centerCol.setOrientation(LinearLayout.VERTICAL);
         centerCol.setGravity(Gravity.CENTER_VERTICAL);
@@ -107,30 +107,22 @@ public class MainActivity extends Activity {
         LinearLayout.LayoutParams centerParams = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1.1f);
         centerCol.setLayoutParams(centerParams);
 
-        tvCoolant = createDataRow(centerCol, "ОЖ:", "-- °C", Color.WHITE, 32, 15);
-        tvTransTemp = createDataRow(centerCol, "АКПП:", "-- °C", Color.WHITE, 32, 15);
-        tvOutTemp = createDataRow(centerCol, "За бортом:", "-- °C", Color.LTGRAY, 32, 15);
+        tvCoolant = createDataRow(centerCol, "ОЖ:", "-- °C", Color.WHITE, 32, 20);
+        tvTransTemp = createDataRow(centerCol, "АКПП:", "-- °C", Color.WHITE, 32, 20);
+        tvOutTemp = createDataRow(centerCol, "За бортом:", "-- °C", Color.LTGRAY, 32, 20);
         
-        // НОВОЕ: Атмосферное давление
-        tvPressure = createDataRow(centerCol, "Давление:", "-- кПа", Color.LTGRAY, 28, 15);
-
-        // === ПРАВАЯ КОЛОНКА (Двери, Ручник, Парктроник) ===
+        // === ПРАВАЯ КОЛОНКА ===
         LinearLayout rightCol = new LinearLayout(this);
         rightCol.setOrientation(LinearLayout.VERTICAL);
         rightCol.setGravity(Gravity.CENTER_VERTICAL);
-        LinearLayout.LayoutParams rightParams = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1.2f);
+        LinearLayout.LayoutParams rightParams = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1.1f);
         rightCol.setLayoutParams(rightParams);
 
-        // Уменьшил размер шрифта и отступы для правой колонки, чтобы влезло 7 строк
-        tvDoorDriver = createDataRow(rightCol, "Водитель:", "Закрыто", Color.LTGRAY, 26, 8);
-        tvDoorPass = createDataRow(rightCol, "Пассажир:", "Закрыто", Color.LTGRAY, 26, 8);
-        tvDoorRL = createDataRow(rightCol, "Зад. левая:", "Закрыто", Color.LTGRAY, 26, 8);
-        tvDoorRR = createDataRow(rightCol, "Зад. правая:", "Закрыто", Color.LTGRAY, 26, 8);
-        tvDoorTrunk = createDataRow(rightCol, "Багажник:", "Закрыто", Color.LTGRAY, 26, 8);
-        
-        // НОВОЕ: Ручник и Парктроник
-        tvHandbrake = createDataRow(rightCol, "Ручник:", "Опущен", Color.LTGRAY, 26, 8);
-        tvParktronic = createDataRow(rightCol, "Парктроник:", "Чисто", Color.LTGRAY, 26, 8);
+        tvDoorDriver = createDataRow(rightCol, "Водитель:", "Закрыто", Color.LTGRAY, 30, 15);
+        tvDoorPass = createDataRow(rightCol, "Пассажир:", "Закрыто", Color.LTGRAY, 30, 15);
+        tvDoorRL = createDataRow(rightCol, "Зад. левая:", "Закрыто", Color.LTGRAY, 30, 15);
+        tvDoorRR = createDataRow(rightCol, "Зад. правая:", "Закрыто", Color.LTGRAY, 30, 15);
+        tvDoorTrunk = createDataRow(rightCol, "Багажник:", "Закрыто", Color.LTGRAY, 30, 15);
 
         rootLayout.addView(leftCol);
         rootLayout.addView(centerCol);
@@ -141,7 +133,6 @@ public class MainActivity extends Activity {
         handler.postDelayed(cacheRunnable, 1000);
     }
 
-    // Добавил параметр padding для гибкой настройки
     private TextView createDataRow(LinearLayout parent, String label, String defaultValue, int valueColor, int textSize, int padding) {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
@@ -286,17 +277,6 @@ public class MainActivity extends Activity {
             case "BCM_Ext_Temp_R":
                 if (value > -40 && value < 50) tvOutTemp.setText(String.format(Locale.US, "%d °C", value)); 
                 break;
-                
-            // НОВЫЕ СОБЫТИЯ
-            case "ParkBrakeSts":
-                if (value == 1) {
-                    tvHandbrake.setText("ЗАТЯНУТ");
-                    tvHandbrake.setTextColor(Color.RED);
-                } else {
-                    tvHandbrake.setText("Опущен");
-                    tvHandbrake.setTextColor(Color.LTGRAY);
-                }
-                break;
             case "BCM_SystemPower_R":
                 String pwr = "?";
                 if (value == 0) pwr = "OFF";
@@ -305,17 +285,13 @@ public class MainActivity extends Activity {
                 else if (value == 3) pwr = "RUN";
                 tvPower.setText("PWR: " + pwr);
                 break;
-            case "BCM_AtmosphericPressure_R":
-                tvPressure.setText(String.format(Locale.US, "%d кПа", value));
+
+            // ПАРКТРОНИКИ ОСТАЮТСЯ В КОДЕ (просто обновляем переменные в памяти)
+            case "PAS_ObjectSts_RRC_R": 
+                parkR = value; 
                 break;
-            case "PAS_ObjectSts_RRM_R": // Парктроник по центру сзади
-                if (value == 0) {
-                    tvParktronic.setText("Чисто");
-                    tvParktronic.setTextColor(Color.LTGRAY);
-                } else {
-                    tvParktronic.setText("СТОП (" + value + ")");
-                    tvParktronic.setTextColor(Color.RED);
-                }
+            case "PAS_ObjectSts_RLC_R": 
+                parkL = value; 
                 break;
 
             case "BCM_DriverDoorSts": updateDoorState(tvDoorDriver, value); break;

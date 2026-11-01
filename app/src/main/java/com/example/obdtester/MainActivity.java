@@ -24,7 +24,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 public class MainActivity extends Activity {
-    private TextView tvSpeed, tvCoolant, tvGear, tvDoor, tvTransTemp;
+    private TextView tvSpeed, tvCoolant, tvGear, tvTransTemp, tvOutTemp, tvParktronic;
     private IBinder bcmService;
     private boolean isServiceConnected = false;
     private final String CLIENT_NAME = "OBDTester-" + java.util.UUID.randomUUID().toString();
@@ -39,69 +39,76 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        // --- Настройка папки для логов ---
         logDir = getExternalFilesDir(null);
 
-        // --- Настройка UI (Дашборд) ---
+        // --- Настройка UI ---
         LinearLayout mainLayout = new LinearLayout(this);
         mainLayout.setOrientation(LinearLayout.VERTICAL);
         mainLayout.setBackgroundColor(Color.BLACK);
         mainLayout.setPadding(40, 20, 40, 20);
         mainLayout.setGravity(Gravity.CENTER);
 
-        // Верхняя строка (Скорость)
+        // 1. Скорость
         tvSpeed = new TextView(this);
         tvSpeed.setTextColor(Color.WHITE);
-        tvSpeed.setTextSize(80);
+        tvSpeed.setTextSize(90);
         tvSpeed.setGravity(Gravity.CENTER);
         tvSpeed.setText("0 км/ч");
 
-        // Средняя строка (Передача и Температура ОЖ)
+        // 2. Передача и ОЖ
         LinearLayout middleLayout = new LinearLayout(this);
         middleLayout.setOrientation(LinearLayout.HORIZONTAL);
         middleLayout.setGravity(Gravity.CENTER);
-        middleLayout.setPadding(0, 30, 0, 30);
+        middleLayout.setPadding(0, 20, 0, 20);
 
         tvGear = new TextView(this);
         tvGear.setTextColor(Color.GREEN);
-        tvGear.setTextSize(50);
+        tvGear.setTextSize(60);
         tvGear.setPadding(0, 0, 50, 0);
         tvGear.setText("P");
 
         tvCoolant = new TextView(this);
         tvCoolant.setTextColor(Color.WHITE);
-        tvCoolant.setTextSize(50);
+        tvCoolant.setTextSize(60);
         tvCoolant.setText("ОЖ: -- °C");
 
         middleLayout.addView(tvGear);
         middleLayout.addView(tvCoolant);
 
-        // Нижняя строка (Статус дверей и температура коробки)
+        // 3. Нижняя строка (За бортом и АКПП)
         LinearLayout bottomLayout = new LinearLayout(this);
         bottomLayout.setOrientation(LinearLayout.HORIZONTAL);
         bottomLayout.setGravity(Gravity.CENTER);
 
-        tvDoor = new TextView(this);
-        tvDoor.setTextColor(Color.LTGRAY);
-        tvDoor.setTextSize(30);
-        tvDoor.setPadding(0, 0, 50, 0);
-        tvDoor.setText("Двери: Закрыты");
+        tvOutTemp = new TextView(this);
+        tvOutTemp.setTextColor(Color.LTGRAY);
+        tvOutTemp.setTextSize(35);
+        tvOutTemp.setPadding(0, 0, 40, 0);
+        tvOutTemp.setText("За бортом: -- °C");
 
         tvTransTemp = new TextView(this);
         tvTransTemp.setTextColor(Color.LTGRAY);
-        tvTransTemp.setTextSize(30);
+        tvTransTemp.setTextSize(35);
         tvTransTemp.setText("АКПП: -- °C");
 
-        bottomLayout.addView(tvDoor);
+        bottomLayout.addView(tvOutTemp);
         bottomLayout.addView(tvTransTemp);
+
+        // 4. Статус парктроников
+        tvParktronic = new TextView(this);
+        tvParktronic.setTextColor(Color.DKGRAY);
+        tvParktronic.setTextSize(40);
+        tvParktronic.setGravity(Gravity.CENTER);
+        tvParktronic.setPadding(0, 20, 0, 0);
+        tvParktronic.setText("ПАРКТРОНИК: ВЫКЛ");
 
         mainLayout.addView(tvSpeed);
         mainLayout.addView(middleLayout);
         mainLayout.addView(bottomLayout);
+        mainLayout.addView(tvParktronic);
 
         setContentView(mainLayout);
 
-        // Подключаемся к службе BCM
         bindToBcmService();
     }
 
@@ -144,7 +151,6 @@ public class MainActivity extends Activity {
         }
     };
 
-    // ПРИЕМНИК ДАННЫХ
     private final IBinder bcmCallback = new Binder() {
         @Override
         protected boolean onTransact(int code, Parcel data, Parcel reply, int flags) throws RemoteException {
@@ -153,11 +159,9 @@ public class MainActivity extends Activity {
                 String signalName = data.readString();
                 final int signalValue = data.readInt();
 
-                // 1. ПИШЕМ В ЛОГ (черный ящик)
                 String time = timeFormat.format(new Date());
                 writeToLog(String.format(Locale.US, "[%s] СОБЫТИЕ: %s = %d", time, signalName, signalValue));
 
-                // 2. ОБНОВЛЯЕМ ЭКРАН
                 runOnUiThread(new Runnable() {
                     public void run() {
                         updateUI(signalName, signalValue);
@@ -180,18 +184,16 @@ public class MainActivity extends Activity {
                 break;
                 
             case "BCM_Coolant_R":
-                // Фильтр: если температура выше 120 или ниже -40, это мусор при выключении зажигания
-                if (value > 120 || value < -40) {
-                    // Игнорируем
+                if (value > 120 || value <= 0) {
+                    // Игнорируем мусор и нули
                 } else {
                     tvCoolant.setText(String.format(Locale.US, "ОЖ: %d °C", value));
                 }
                 break;
                 
             case "BCM_TRANS_OIL_TEMP_R":
-                // Фильтр для АКПП
-                if (value > 150 || value < -40) {
-                    // Игнорируем
+                if (value > 150 || value <= 0) {
+                    // Игнорируем мусор
                 } else {
                     tvTransTemp.setText(String.format(Locale.US, "АКПП: %d °C", value));
                 }
@@ -206,10 +208,36 @@ public class MainActivity extends Activity {
                 tvGear.setText(gearText);
                 break;
                 
-            case "BCM_DriverDoorSts":
-                tvDoor.setText(value == 1 ? "Двери: ОТКРЫТЫ" : "Двери: Закрыты");
-                if (value == 1) tvDoor.setTextColor(Color.RED);
-                else tvDoor.setTextColor(Color.LTGRAY);
+            case "BCM_Ext_Temp_R":
+                // Отсекаем глюки (-40 и 87), которые мы видели в логе
+                if (value == -40 || value == 87 || value < -40 || value > 50) {
+                    // Игнорируем
+                } else {
+                    tvOutTemp.setText(String.format(Locale.US, "За бортом: %d °C", value));
+                }
+                break;
+
+            case "PAS_RPAS_SysWorkSts_R":
+                // Статус работы парктроников (0 - выкл, 1 - вкл)
+                if (value == 1) {
+                    tvParktronic.setTextColor(Color.YELLOW);
+                    tvParktronic.setText("ПАРКТРОНИК: ВКЛ");
+                } else {
+                    tvParktronic.setTextColor(Color.DKGRAY);
+                    tvParktronic.setText("ПАРКТРОНИК: ВЫКЛ");
+                }
+                break;
+
+            case "PAS_RPASChime_R":
+                // Пищалка парктроника. Если > 0, значит видит препятствие
+                if (value > 0) {
+                    tvParktronic.setTextColor(Color.RED);
+                    tvParktronic.setText("ПАРКТРОНИК: СТОП!");
+                } else {
+                    // Если пищалка замолкла, но система работает, возвращаем желтый
+                    tvParktronic.setTextColor(Color.YELLOW);
+                    tvParktronic.setText("ПАРКТРОНИК: ВКЛ");
+                }
                 break;
         }
     }

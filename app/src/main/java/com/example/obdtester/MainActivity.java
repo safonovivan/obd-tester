@@ -27,21 +27,18 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 public class MainActivity extends Activity {
-    // UI элементы
     private TextView tvSpeed, tvGear;
     private TextView tvCoolant, tvTransTemp, tvOutTemp;
     private TextView tvDoorDriver, tvDoorPass, tvDoorRL, tvDoorRR, tvDoorTrunk;
     
-    // Сервис и данные
     private IBinder bcmService;
     private boolean isServiceConnected = false;
     private final String CLIENT_NAME = "OBDTester-" + java.util.UUID.randomUUID().toString();
     private Handler handler = new Handler(Looper.getMainLooper());
 
-    // Массив для кэша (179 чисел)
     private int[] cachedData = new int[179];
+    private boolean cacheLogged = false; // Флаг, чтобы логировать кэш только пару раз
 
-    // --- Переменные для логирования ---
     private File logFile;
     private File logDir;
     private SimpleDateFormat timeFormat = new SimpleDateFormat("HH:mm:ss.SSS", Locale.US);
@@ -52,13 +49,12 @@ public class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
         logDir = getExternalFilesDir(null);
 
-        // --- ГЛАВНЫЙ КАРКАС ---
         LinearLayout rootLayout = new LinearLayout(this);
         rootLayout.setOrientation(LinearLayout.HORIZONTAL);
         rootLayout.setBackgroundColor(Color.BLACK);
         rootLayout.setPadding(20, 20, 20, 20);
 
-        // === ЛЕВАЯ КОЛОНКА (Скорость и Передача) ===
+        // Левая колонка (Скорость)
         LinearLayout leftCol = new LinearLayout(this);
         leftCol.setOrientation(LinearLayout.VERTICAL);
         leftCol.setGravity(Gravity.CENTER);
@@ -90,7 +86,7 @@ public class MainActivity extends Activity {
         leftCol.addView(tvSpeedLabel);
         leftCol.addView(tvGear);
 
-        // === ЦЕНТРАЛЬНАЯ КОЛОНКА (Температуры) ===
+        // Центральная колонка (Температуры)
         LinearLayout centerCol = new LinearLayout(this);
         centerCol.setOrientation(LinearLayout.VERTICAL);
         centerCol.setGravity(Gravity.CENTER_VERTICAL);
@@ -102,7 +98,7 @@ public class MainActivity extends Activity {
         tvTransTemp = createDataRow(centerCol, "АКПП:", "-- °C", Color.WHITE, 32);
         tvOutTemp = createDataRow(centerCol, "За бортом:", "-- °C", Color.LTGRAY, 32);
 
-        // === ПРАВАЯ КОЛОНКА (Двери и Багажник) ===
+        // Правая колонка (Двери)
         LinearLayout rightCol = new LinearLayout(this);
         rightCol.setOrientation(LinearLayout.VERTICAL);
         rightCol.setGravity(Gravity.CENTER_VERTICAL);
@@ -120,14 +116,10 @@ public class MainActivity extends Activity {
         rootLayout.addView(rightCol);
         setContentView(rootLayout);
 
-        // Подключаемся к BCM
         bindToBcmService();
-
-        // Запускаем чтение кэша (для точной температуры АКПП) раз в секунду
         handler.postDelayed(cacheRunnable, 1000);
     }
 
-    // Вспомогательная функция
     private TextView createDataRow(LinearLayout parent, String label, String defaultValue, int valueColor, int textSize) {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
@@ -151,14 +143,13 @@ public class MainActivity extends Activity {
         return tvValue;
     }
 
-    // --- ЧТЕНИЕ КЭША (ДЛЯ ТЕМПЕРАТУРЫ АКПП) ---
     private Runnable cacheRunnable = new Runnable() {
         @Override
         public void run() {
             if (isServiceConnected && bcmService != null) {
                 readBcmCache();
             }
-            handler.postDelayed(this, 1000); // Каждую секунду
+            handler.postDelayed(this, 2000); // Раз в 2 секунды
         }
     };
 
@@ -172,15 +163,30 @@ public class MainActivity extends Activity {
             if (transactSuccess) {
                 reply.readException();
                 int successFlag = reply.readInt();
-                if (successFlag == 1 && reply.dataAvail() == 716) {
+                int dataAvail = reply.dataAvail();
+                
+                // ОТЛАДКА: Пишем в лог, что вернул кэш (только первые 3 раза)
+                if (!cacheLogged) {
+                    writeToLog("КЭШ-ОТЛАДКА: transactSuccess=true, flag=" + successFlag + ", dataAvail=" + dataAvail);
+                    cacheLogged = true; 
+                }
+
+                if (successFlag == 1 && dataAvail == 716) {
                     for (int i = 0; i < 179; i++) {
                         cachedData[i] = reply.readInt();
                     }
                     
-                    // Берем температуру АКПП из 102-го индекса (из реверса M6Drive)
+                    // ОТЛАДКА: Выводим первые 110 чисел в лог (чтобы найти АКПП и напряжение)
+                    if (cacheLogged && cachedData[102] == 0) { // Если индекс 102 пуст, дампим массив
+                        StringBuilder sb = new StringBuilder("ДАМП КЭША: ");
+                        for (int i = 50; i < 110; i++) {
+                            if (cachedData[i] != 0) sb.append("[").append(i).append("]=").append(cachedData[i]).append(" ");
+                        }
+                        writeToLog(sb.toString());
+                        cacheLogged = false; // Больше не спамим
+                    }
+
                     final int transTemp = cachedData[102];
-                    
-                    // Если значение адекватное (не 0 и не мусор)
                     if (transTemp > 0 && transTemp < 150) {
                         runOnUiThread(new Runnable() {
                             public void run() {
@@ -188,9 +194,20 @@ public class MainActivity extends Activity {
                             }
                         });
                     }
+                } else {
+                    if (cacheLogged) writeToLog("КЭШ-ОТЛАДКА: Неверный размер или флаг!");
+                }
+            } else {
+                if (!cacheLogged) {
+                    writeToLog("КЭШ-ОТЛАДКА: transact(4) вернул false");
+                    cacheLogged = true;
                 }
             }
-        } catch (Exception ignored) {
+        } catch (Exception e) {
+            if (!cacheLogged) {
+                writeToLog("КЭШ-ОТЛАДКА: Ошибка " + e.toString());
+                cacheLogged = true;
+            }
         } finally {
             data.recycle();
             reply.recycle();
@@ -255,24 +272,17 @@ public class MainActivity extends Activity {
     private void updateUI(String signalName, int value) {
         if (signalName == null) return;
         switch (signalName) {
-            case "VCU_VehSpd": 
-                tvSpeed.setText(String.valueOf(value)); 
-                break;
+            case "VCU_VehSpd": tvSpeed.setText(String.valueOf(value)); break;
             case "BCM_VCU_GearSts_R":
                 String g = "?";
                 if (value == 0) g = "P"; else if (value == 5) g = "D"; else if (value == 6) g = "N"; else if (value == 7) g = "R";
-                tvGear.setText(g); 
-                break;
+                tvGear.setText(g); break;
             case "BCM_Coolant_R":
-                if (value > 0 && value <= 120) tvCoolant.setText(String.format(Locale.US, "%d °C", value)); 
-                break;
+                if (value > 0 && value <= 120) tvCoolant.setText(String.format(Locale.US, "%d °C", value)); break;
             case "BCM_TRANS_OIL_TEMP_R":
-                // Если по какой-то причине кэш не отдал данные, используем событие
-                if (value > 0 && value <= 150) tvTransTemp.setText(String.format(Locale.US, "%d °C", value)); 
-                break;
+                if (value > 0 && value <= 150) tvTransTemp.setText(String.format(Locale.US, "%d °C", value)); break;
             case "BCM_Ext_Temp_R":
-                if (value > -40 && value < 50) tvOutTemp.setText(String.format(Locale.US, "%d °C", value)); 
-                break;
+                if (value > -40 && value < 50) tvOutTemp.setText(String.format(Locale.US, "%d °C", value)); break;
             case "BCM_DriverDoorSts": updateDoorState(tvDoorDriver, value); break;
             case "BCM_PassengerDoorSts": updateDoorState(tvDoorPass, value); break;
             case "BCM_LRDoorSts": updateDoorState(tvDoorRL, value); break;
@@ -305,7 +315,6 @@ public class MainActivity extends Activity {
         return false;
     }
 
-    // --- ЛОГИКА ЛОГОВ ---
     private File getNextLogFile() {
         if (logDir == null) return null;
         int maxIndex = 0;

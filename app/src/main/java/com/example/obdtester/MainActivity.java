@@ -37,7 +37,6 @@ public class MainActivity extends Activity {
     private Handler handler = new Handler(Looper.getMainLooper());
 
     private int[] cachedData = new int[179];
-    private boolean cacheLogged = false; // Флаг, чтобы логировать кэш только пару раз
 
     private File logFile;
     private File logDir;
@@ -143,13 +142,14 @@ public class MainActivity extends Activity {
         return tvValue;
     }
 
+    // Чтение кэша для АКПП (работает как работало)
     private Runnable cacheRunnable = new Runnable() {
         @Override
         public void run() {
             if (isServiceConnected && bcmService != null) {
                 readBcmCache();
             }
-            handler.postDelayed(this, 2000); // Раз в 2 секунды
+            handler.postDelayed(this, 1000);
         }
     };
 
@@ -163,29 +163,11 @@ public class MainActivity extends Activity {
             if (transactSuccess) {
                 reply.readException();
                 int successFlag = reply.readInt();
-                int dataAvail = reply.dataAvail();
-                
-                // ОТЛАДКА: Пишем в лог, что вернул кэш (только первые 3 раза)
-                if (!cacheLogged) {
-                    writeToLog("КЭШ-ОТЛАДКА: transactSuccess=true, flag=" + successFlag + ", dataAvail=" + dataAvail);
-                    cacheLogged = true; 
-                }
-
-                if (successFlag == 1 && dataAvail == 716) {
+                if (successFlag == 1 && reply.dataAvail() == 716) {
                     for (int i = 0; i < 179; i++) {
                         cachedData[i] = reply.readInt();
                     }
                     
-                    // ОТЛАДКА: Выводим первые 110 чисел в лог (чтобы найти АКПП и напряжение)
-                    if (cacheLogged && cachedData[102] == 0) { // Если индекс 102 пуст, дампим массив
-                        StringBuilder sb = new StringBuilder("ДАМП КЭША: ");
-                        for (int i = 50; i < 110; i++) {
-                            if (cachedData[i] != 0) sb.append("[").append(i).append("]=").append(cachedData[i]).append(" ");
-                        }
-                        writeToLog(sb.toString());
-                        cacheLogged = false; // Больше не спамим
-                    }
-
                     final int transTemp = cachedData[102];
                     if (transTemp > 0 && transTemp < 150) {
                         runOnUiThread(new Runnable() {
@@ -194,20 +176,9 @@ public class MainActivity extends Activity {
                             }
                         });
                     }
-                } else {
-                    if (cacheLogged) writeToLog("КЭШ-ОТЛАДКА: Неверный размер или флаг!");
-                }
-            } else {
-                if (!cacheLogged) {
-                    writeToLog("КЭШ-ОТЛАДКА: transact(4) вернул false");
-                    cacheLogged = true;
                 }
             }
-        } catch (Exception e) {
-            if (!cacheLogged) {
-                writeToLog("КЭШ-ОТЛАДКА: Ошибка " + e.toString());
-                cacheLogged = true;
-            }
+        } catch (Exception ignored) {
         } finally {
             data.recycle();
             reply.recycle();
@@ -272,17 +243,27 @@ public class MainActivity extends Activity {
     private void updateUI(String signalName, int value) {
         if (signalName == null) return;
         switch (signalName) {
-            case "VCU_VehSpd": tvSpeed.setText(String.valueOf(value)); break;
+            case "VCU_VehSpd": 
+                tvSpeed.setText(String.valueOf(value)); 
+                break;
             case "BCM_VCU_GearSts_R":
                 String g = "?";
-                if (value == 0) g = "P"; else if (value == 5) g = "D"; else if (value == 6) g = "N"; else if (value == 7) g = "R";
-                tvGear.setText(g); break;
+                if (value == 0) g = "P"; 
+                else if (value == 5) g = "D"; 
+                else if (value == 6) g = "N"; 
+                else if (value == 7) g = "R";
+                else if (value == 8) g = "M"; // Вот та самая добавленная строчка!
+                tvGear.setText(g); 
+                break;
             case "BCM_Coolant_R":
-                if (value > 0 && value <= 120) tvCoolant.setText(String.format(Locale.US, "%d °C", value)); break;
+                if (value > 0 && value <= 120) tvCoolant.setText(String.format(Locale.US, "%d °C", value)); 
+                break;
             case "BCM_TRANS_OIL_TEMP_R":
-                if (value > 0 && value <= 150) tvTransTemp.setText(String.format(Locale.US, "%d °C", value)); break;
+                if (value > 0 && value <= 150) tvTransTemp.setText(String.format(Locale.US, "%d °C", value)); 
+                break;
             case "BCM_Ext_Temp_R":
-                if (value > -40 && value < 50) tvOutTemp.setText(String.format(Locale.US, "%d °C", value)); break;
+                if (value > -40 && value < 50) tvOutTemp.setText(String.format(Locale.US, "%d °C", value)); 
+                break;
             case "BCM_DriverDoorSts": updateDoorState(tvDoorDriver, value); break;
             case "BCM_PassengerDoorSts": updateDoorState(tvDoorPass, value); break;
             case "BCM_LRDoorSts": updateDoorState(tvDoorRL, value); break;

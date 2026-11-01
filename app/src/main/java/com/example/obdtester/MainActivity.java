@@ -37,8 +37,11 @@ public class MainActivity extends Activity {
     private IBinder bcmService;
     private boolean isServiceConnected = false;
     private String CLIENT_NAME = "OBDTester-" + java.util.UUID.randomUUID().toString();
+    private Handler handler = new Handler(Looper.getMainLooper());
     
     private SharedPreferences prefs;
+    private int[] cachedData = new int[179];
+
     private File logFile;
     private File logDir;
     private SimpleDateFormat timeFormat = new SimpleDateFormat("HH:mm:ss.SSS", Locale.US);
@@ -108,7 +111,6 @@ public class MainActivity extends Activity {
         tvTransTemp = createDataRow(centerCol, "АКПП:", "-- °C", Color.WHITE, 32, 20);
         tvOutTemp = createDataRow(centerCol, "За бортом:", "-- °C", Color.LTGRAY, 32, 20);
         
-        // Восстанавливаем последние значения из памяти
         restoreLastValues();
         
         // === ПРАВАЯ КОЛОНКА ===
@@ -118,15 +120,14 @@ public class MainActivity extends Activity {
         LinearLayout.LayoutParams rightParams = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1.1f);
         rightCol.setLayoutParams(rightParams);
 
-        tvDoorDriver = createDataRow(rightCol, "Водитель:", "Закрыто", Color.LTGRAY, 28, 12);
-        tvDoorPass = createDataRow(rightCol, "Пассажир:", "Закрыто", Color.LTGRAY, 28, 12);
-        tvDoorRL = createDataRow(rightCol, "Зад. левая:", "Закрыто", Color.LTGRAY, 28, 12);
-        tvDoorRR = createDataRow(rightCol, "Зад. правая:", "Закрыто", Color.LTGRAY, 28, 12);
-        tvDoorTrunk = createDataRow(rightCol, "Багажник:", "Закрыто", Color.LTGRAY, 28, 12);
+        tvDoorDriver = createDataRow(rightCol, "Водитель:", "Закрыто", Color.LTGRAY, 28, 10);
+        tvDoorPass = createDataRow(rightCol, "Пассажир:", "Закрыто", Color.LTGRAY, 28, 10);
+        tvDoorRL = createDataRow(rightCol, "Зад. левая:", "Закрыто", Color.LTGRAY, 28, 10);
+        tvDoorRR = createDataRow(rightCol, "Зад. правая:", "Закрыто", Color.LTGRAY, 28, 10);
+        tvDoorTrunk = createDataRow(rightCol, "Багажник:", "Закрыто", Color.LTGRAY, 28, 10);
 
-        // Кнопка ОБНОВИТЬ (для тестов)
         Button btnRefresh = new Button(this);
-        btnRefresh.setText("ОБНОВИТЬ ДАННЫЕ");
+        btnRefresh.setText("ОБНОВИТЬ");
         btnRefresh.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -141,6 +142,9 @@ public class MainActivity extends Activity {
         setContentView(rootLayout);
 
         bindToBcmService();
+        
+        // Запускаем чтение кэша раз в 2 секунды (теперь мы подписаны, должно сработать)
+        handler.postDelayed(cacheRunnable, 2000);
     }
 
     private void restoreLastValues() {
@@ -177,16 +181,62 @@ public class MainActivity extends Activity {
         return tvValue;
     }
 
+    private Runnable cacheRunnable = new Runnable() {
+        @Override
+        public void run() {
+            if (isServiceConnected && bcmService != null) {
+                readBcmCache();
+            }
+            handler.postDelayed(this, 2000);
+        }
+    };
+
+    private void readBcmCache() {
+        Parcel data = Parcel.obtain();
+        Parcel reply = Parcel.obtain();
+        try {
+            data.writeInterfaceToken("com.adayo.module.bcmproxy.IBcmServiceAIDL");
+            boolean transactSuccess = bcmService.transact(4, data, reply, 0);
+            
+            if (transactSuccess) {
+                reply.readException();
+                int successFlag = reply.readInt();
+                if (successFlag == 1 && reply.dataAvail() == 716) {
+                    for (int i = 0; i < 179; i++) {
+                        cachedData[i] = reply.readInt();
+                    }
+                    
+                    // Проверяем индекс 102 (АКПП)
+                    final int transTemp = cachedData[102];
+                    
+                    // Пишем в лог, чтобы понять, дают нам данные или нет
+                    writeToLog("КЭШ (Signed): АКПП=" + transTemp);
+                    
+                    if (transTemp > 0 && transTemp < 150) {
+                        runOnUiThread(new Runnable() {
+                            public void run() {
+                                tvTransTemp.setText(String.format(Locale.US, "%d °C", transTemp));
+                                prefs.edit().putInt("trans_temp", transTemp).apply();
+                            }
+                        });
+                    }
+                }
+            }
+        } catch (Exception ignored) {
+        } finally {
+            data.recycle();
+            reply.recycle();
+        }
+    }
+
     private void reconnectService() {
         writeToLog("=== РУЧНОЕ ОБНОВЛЕНИЕ ===");
         if (bcmService != null) {
-            try {
-                unbindService(serviceConnection);
-            } catch (Exception ignored) {}
+            try { unbindService(serviceConnection); } catch (Exception ignored) {}
         }
         isServiceConnected = false;
         bcmService = null;
-        CLIENT_NAME = "OBDTester-" + java.util.UUID.randomUUID().toString(); // Новое имя клиента
+        CLIENT_NAME = "OBDTester-" + java.util.UUID.randomUUID().toString();
         bindToBcmService();
     }
 
@@ -249,9 +299,7 @@ public class MainActivity extends Activity {
         if (signalName == null) return;
         
         switch (signalName) {
-            case "VCU_VehSpd": 
-                tvSpeed.setText(String.valueOf(value)); 
-                break;
+            case "VCU_VehSpd": tvSpeed.setText(String.valueOf(value)); break;
             case "BCM_VCU_GearSts_R":
                 String g = "?";
                 if (value == 0) g = "P"; 
@@ -259,26 +307,22 @@ public class MainActivity extends Activity {
                 else if (value == 6) g = "N"; 
                 else if (value == 7) g = "R";
                 else if (value == 8) g = "M";
-                tvGear.setText(g); 
-                break;
+                tvGear.setText(g); break;
             case "BCM_Coolant_R":
                 if (value > 0 && value <= 120) {
                     tvCoolant.setText(String.format(Locale.US, "%d °C", value));
                     prefs.edit().putInt("coolant", value).apply();
-                }
-                break;
+                } break;
             case "BCM_TRANS_OIL_TEMP_R":
                 if (value > 0 && value <= 150) {
                     tvTransTemp.setText(String.format(Locale.US, "%d °C", value));
                     prefs.edit().putInt("trans_temp", value).apply();
-                }
-                break;
+                } break;
             case "BCM_Ext_Temp_R":
                 if (value > -40 && value < 50) {
                     tvOutTemp.setText(String.format(Locale.US, "%d °C", value));
                     prefs.edit().putInt("out_temp", value).apply();
-                }
-                break;
+                } break;
             case "BCM_SystemPower_R":
                 String pwr = "?";
                 if (value == 0) pwr = "OFF";
@@ -288,7 +332,6 @@ public class MainActivity extends Activity {
                 tvPower.setText("PWR: " + pwr);
                 prefs.edit().putString("pwr", pwr).apply();
                 break;
-
             case "BCM_DriverDoorSts": updateDoorState(tvDoorDriver, value); break;
             case "BCM_PassengerDoorSts": updateDoorState(tvDoorPass, value); break;
             case "BCM_LRDoorSts": updateDoorState(tvDoorRL, value); break;
@@ -355,6 +398,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onDestroy() {
         super.onDestroy();
+        handler.removeCallbacksAndMessages(null);
         if (bcmService != null) {
             try { unbindService(serviceConnection); } catch (Exception ignored) {}
         }

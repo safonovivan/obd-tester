@@ -17,11 +17,9 @@ import android.os.RemoteException;
 import android.view.Gravity;
 import android.widget.LinearLayout;
 import android.widget.TextView;
-import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
-import java.io.InputStreamReader;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.Locale;
@@ -29,14 +27,19 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 public class MainActivity extends Activity {
+    // UI элементы
     private TextView tvSpeed, tvGear;
-    private TextView tvCoolant, tvTransTemp, tvOutTemp, tvVoltage;
+    private TextView tvCoolant, tvTransTemp, tvOutTemp;
     private TextView tvDoorDriver, tvDoorPass, tvDoorRL, tvDoorRR, tvDoorTrunk;
     
+    // Сервис и данные
     private IBinder bcmService;
     private boolean isServiceConnected = false;
     private final String CLIENT_NAME = "OBDTester-" + java.util.UUID.randomUUID().toString();
     private Handler handler = new Handler(Looper.getMainLooper());
+
+    // Массив для кэша (179 чисел)
+    private int[] cachedData = new int[179];
 
     // --- Переменные для логирования ---
     private File logFile;
@@ -87,7 +90,7 @@ public class MainActivity extends Activity {
         leftCol.addView(tvSpeedLabel);
         leftCol.addView(tvGear);
 
-        // === ЦЕНТРАЛЬНАЯ КОЛОНКА (Температуры, АКБ) ===
+        // === ЦЕНТРАЛЬНАЯ КОЛОНКА (Температуры) ===
         LinearLayout centerCol = new LinearLayout(this);
         centerCol.setOrientation(LinearLayout.VERTICAL);
         centerCol.setGravity(Gravity.CENTER_VERTICAL);
@@ -95,10 +98,9 @@ public class MainActivity extends Activity {
         LinearLayout.LayoutParams centerParams = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1.1f);
         centerCol.setLayoutParams(centerParams);
 
-        tvCoolant = createDataRow(centerCol, "ОЖ:", "-- °C", Color.WHITE, 28);
-        tvTransTemp = createDataRow(centerCol, "АКПП:", "-- °C", Color.WHITE, 28);
-        tvOutTemp = createDataRow(centerCol, "За бортом:", "-- °C", Color.LTGRAY, 28);
-        tvVoltage = createDataRow(centerCol, "АКБ:", "-- В", Color.YELLOW, 28);
+        tvCoolant = createDataRow(centerCol, "ОЖ:", "-- °C", Color.WHITE, 32);
+        tvTransTemp = createDataRow(centerCol, "АКПП:", "-- °C", Color.WHITE, 32);
+        tvOutTemp = createDataRow(centerCol, "За бортом:", "-- °C", Color.LTGRAY, 32);
 
         // === ПРАВАЯ КОЛОНКА (Двери и Багажник) ===
         LinearLayout rightCol = new LinearLayout(this);
@@ -107,11 +109,11 @@ public class MainActivity extends Activity {
         LinearLayout.LayoutParams rightParams = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1.1f);
         rightCol.setLayoutParams(rightParams);
 
-        tvDoorDriver = createDataRow(rightCol, "Водитель:", "Закрыто", Color.LTGRAY, 26);
-        tvDoorPass = createDataRow(rightCol, "Пассажир:", "Закрыто", Color.LTGRAY, 26);
-        tvDoorRL = createDataRow(rightCol, "Зад. левая:", "Закрыто", Color.LTGRAY, 26);
-        tvDoorRR = createDataRow(rightCol, "Зад. правая:", "Закрыто", Color.LTGRAY, 26);
-        tvDoorTrunk = createDataRow(rightCol, "Багажник:", "Закрыто", Color.LTGRAY, 26);
+        tvDoorDriver = createDataRow(rightCol, "Водитель:", "Закрыто", Color.LTGRAY, 28);
+        tvDoorPass = createDataRow(rightCol, "Пассажир:", "Закрыто", Color.LTGRAY, 28);
+        tvDoorRL = createDataRow(rightCol, "Зад. левая:", "Закрыто", Color.LTGRAY, 28);
+        tvDoorRR = createDataRow(rightCol, "Зад. правая:", "Закрыто", Color.LTGRAY, 28);
+        tvDoorTrunk = createDataRow(rightCol, "Багажник:", "Закрыто", Color.LTGRAY, 28);
 
         rootLayout.addView(leftCol);
         rootLayout.addView(centerCol);
@@ -121,21 +123,21 @@ public class MainActivity extends Activity {
         // Подключаемся к BCM
         bindToBcmService();
 
-        // Запускаем чтение АКБ через Root
-        handler.postDelayed(rootBatteryRunnable, 2000);
+        // Запускаем чтение кэша (для точной температуры АКПП) раз в секунду
+        handler.postDelayed(cacheRunnable, 1000);
     }
 
-    // Вспомогательная функция для строк
+    // Вспомогательная функция
     private TextView createDataRow(LinearLayout parent, String label, String defaultValue, int valueColor, int textSize) {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setPadding(0, 10, 0, 10);
+        row.setPadding(0, 15, 0, 15);
 
         TextView tvLabel = new TextView(this);
         tvLabel.setTextColor(Color.GRAY);
         tvLabel.setTextSize(textSize);
         tvLabel.setText(label);
-        tvLabel.setWidth(220); 
+        tvLabel.setWidth(240); 
 
         TextView tvValue = new TextView(this);
         tvValue.setTextColor(valueColor);
@@ -149,57 +151,50 @@ public class MainActivity extends Activity {
         return tvValue;
     }
 
-    // --- ЧТЕНИЕ НАПРЯЖЕНИЯ ЧЕРЕЗ ROOT (SU) ---
-    private Runnable rootBatteryRunnable = new Runnable() {
+    // --- ЧТЕНИЕ КЭША (ДЛЯ ТЕМПЕРАТУРЫ АКПП) ---
+    private Runnable cacheRunnable = new Runnable() {
         @Override
         public void run() {
-            readBatteryVoltageViaRoot();
-            handler.postDelayed(this, 5000); // Раз в 5 секунд
+            if (isServiceConnected && bcmService != null) {
+                readBcmCache();
+            }
+            handler.postDelayed(this, 1000); // Каждую секунду
         }
     };
 
-    private void readBatteryVoltageViaRoot() {
-        new Thread(new Runnable() {
-            @Override
-            public void run() {
-                try {
-                    // Выполняем команду под root
-                    Process process = Runtime.getRuntime().exec("su -c cat /sys/class/power_supply/battery/voltage_now");
-                    BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
-                    String line = reader.readLine();
-                    reader.close();
-                    process.waitFor();
-
-                    if (line != null) {
-                        final long microVolts = Long.parseLong(line.trim());
-                        final double volts = microVolts / 1000000.0;
-                        
-                        if (volts > 5.0 && volts < 30.0) {
-                            runOnUiThread(new Runnable() {
-                                public void run() {
-                                    tvVoltage.setText(String.format(Locale.US, "%.1f В", volts));
-                                }
-                            });
-                        }
+    private void readBcmCache() {
+        Parcel data = Parcel.obtain();
+        Parcel reply = Parcel.obtain();
+        try {
+            data.writeInterfaceToken("com.adayo.module.bcmproxy.IBcmServiceAIDL");
+            boolean transactSuccess = bcmService.transact(4, data, reply, 0);
+            
+            if (transactSuccess) {
+                reply.readException();
+                int successFlag = reply.readInt();
+                if (successFlag == 1 && reply.dataAvail() == 716) {
+                    for (int i = 0; i < 179; i++) {
+                        cachedData[i] = reply.readInt();
                     }
-                } catch (Exception e) {
-                    // Если не сработало, пробуем USB
-                    try {
-                        Process p2 = Runtime.getRuntime().exec("su -c cat /sys/class/power_supply/usb/voltage_now");
-                        BufferedReader br = new BufferedReader(new InputStreamReader(p2.getInputStream()));
-                        String l = br.readLine();
-                        br.close();
-                        if (l != null) {
-                            double v = Long.parseLong(l.trim()) / 1000000.0;
-                            if (v > 5.0 && v < 30.0) {
-                                final double finalV = v;
-                                runOnUiThread(new Runnable() { public void run() { tvVoltage.setText(String.format(Locale.US, "%.1f В", finalV)); } });
+                    
+                    // Берем температуру АКПП из 102-го индекса (из реверса M6Drive)
+                    final int transTemp = cachedData[102];
+                    
+                    // Если значение адекватное (не 0 и не мусор)
+                    if (transTemp > 0 && transTemp < 150) {
+                        runOnUiThread(new Runnable() {
+                            public void run() {
+                                tvTransTemp.setText(String.format(Locale.US, "%d °C", transTemp));
                             }
-                        }
-                    } catch (Exception ignored) {}
+                        });
+                    }
                 }
             }
-        }).start();
+        } catch (Exception ignored) {
+        } finally {
+            data.recycle();
+            reply.recycle();
+        }
     }
 
     private void bindToBcmService() {
@@ -260,17 +255,24 @@ public class MainActivity extends Activity {
     private void updateUI(String signalName, int value) {
         if (signalName == null) return;
         switch (signalName) {
-            case "VCU_VehSpd": tvSpeed.setText(String.valueOf(value)); break;
+            case "VCU_VehSpd": 
+                tvSpeed.setText(String.valueOf(value)); 
+                break;
             case "BCM_VCU_GearSts_R":
                 String g = "?";
                 if (value == 0) g = "P"; else if (value == 5) g = "D"; else if (value == 6) g = "N"; else if (value == 7) g = "R";
-                tvGear.setText(g); break;
+                tvGear.setText(g); 
+                break;
             case "BCM_Coolant_R":
-                if (value > 0 && value <= 120) tvCoolant.setText(String.format(Locale.US, "%d °C", value)); break;
+                if (value > 0 && value <= 120) tvCoolant.setText(String.format(Locale.US, "%d °C", value)); 
+                break;
             case "BCM_TRANS_OIL_TEMP_R":
-                if (value > 0 && value <= 150) tvTransTemp.setText(String.format(Locale.US, "%d °C", value)); break;
+                // Если по какой-то причине кэш не отдал данные, используем событие
+                if (value > 0 && value <= 150) tvTransTemp.setText(String.format(Locale.US, "%d °C", value)); 
+                break;
             case "BCM_Ext_Temp_R":
-                if (value > -40 && value < 50) tvOutTemp.setText(String.format(Locale.US, "%d °C", value)); break;
+                if (value > -40 && value < 50) tvOutTemp.setText(String.format(Locale.US, "%d °C", value)); 
+                break;
             case "BCM_DriverDoorSts": updateDoorState(tvDoorDriver, value); break;
             case "BCM_PassengerDoorSts": updateDoorState(tvDoorPass, value); break;
             case "BCM_LRDoorSts": updateDoorState(tvDoorRL, value); break;

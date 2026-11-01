@@ -1,11 +1,17 @@
 package com.example.obdtester;
 
 import android.app.Activity;
+import android.content.ComponentName;
 import android.content.Context;
+import android.content.Intent;
+import android.content.ServiceConnection;
+import android.graphics.Color;
 import android.os.Bundle;
 import android.os.Handler;
+import android.os.IBinder;
 import android.os.Looper;
-import android.graphics.Color;
+import android.os.Parcel;
+import android.os.RemoteException;
 import android.view.View;
 import android.widget.Button;
 import android.widget.LinearLayout;
@@ -13,8 +19,6 @@ import android.widget.TextView;
 import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
-import java.lang.reflect.Field;
-import java.lang.reflect.Method;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.Locale;
@@ -24,16 +28,15 @@ import java.util.regex.Pattern;
 public class MainActivity extends Activity {
     private TextView textView;
     private Handler handler = new Handler(Looper.getMainLooper());
-    private Object carInstance;
-    private Object propertyManager;
-    private boolean isCarReady = false;
     private boolean isRunning = false;
     private File logFile;
-    private SimpleDateFormat timeFormat = new SimpleDateFormat("HH:mm:ss.SSS", Locale.US);
-
-    // Лимит одного файла: 5 МБ
-    private static final long MAX_LOG_SIZE = 5 * 1024 * 1024;
     private File logDir;
+    private SimpleDateFormat timeFormat = new SimpleDateFormat("HH:mm:ss.SSS", Locale.US);
+    private static final long MAX_LOG_SIZE = 5 * 1024 * 1024; // 5MB
+
+    private IBinder bcmService;
+    private boolean isServiceConnected = false;
+    private int[] cachedData = new int[179];
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -52,18 +55,14 @@ public class MainActivity extends Activity {
         btnStart.setText("СТАРТ");
         btnStart.setOnClickListener(new View.OnClickListener() {
             @Override
-            public void onClick(View v) {
-                startPolling();
-            }
+            public void onClick(View v) { startPolling(); }
         });
 
         Button btnStop = new Button(this);
         btnStop.setText("СТОП");
         btnStop.setOnClickListener(new View.OnClickListener() {
             @Override
-            public void onClick(View v) {
-                stopPolling();
-            }
+            public void onClick(View v) { stopPolling(); }
         });
 
         buttonLayout.addView(btnStart);
@@ -71,53 +70,67 @@ public class MainActivity extends Activity {
 
         textView = new TextView(this);
         textView.setTextColor(Color.WHITE);
-        textView.setTextSize(35);
+        textView.setTextSize(25);
         textView.setPadding(0, 30, 0, 0);
-        textView.setText("Ожидание...\nНажмите СТАРТ");
+        textView.setText("Ожидание...\nПопытка подключения к BCM Service...");
 
         layout.addView(buttonLayout);
         layout.addView(textView);
         setContentView(layout);
 
-        // --- Настройка папки для логов ---
+        // --- Настройка файла лога ---
         logDir = getExternalFilesDir(null);
 
-        // --- Инициализация Car API в фоне ---
-        new Thread(new Runnable() {
-            @Override
-            public void run() {
-                try {
-                    Class<?> carClass = Class.forName("android.car.Car");
-                    Method createCarMethod = carClass.getMethod("createCar", Context.class);
-                    carInstance = createCarMethod.invoke(null, MainActivity.this);
-
-                    if (carInstance != null) {
-                        Field propServiceField = carClass.getField("PROPERTY_SERVICE");
-                        String propServiceName = (String) propServiceField.get(null);
-                        Method getCarManagerMethod = carClass.getMethod("getCarManager", String.class);
-                        propertyManager = getCarManagerMethod.invoke(carInstance, propServiceName);
-                        isCarReady = true;
-                        writeToLog("Car API успешно инициализирован.");
-                    }
-                } catch (Exception e) {
-                    writeToLog("КРИТИЧЕСКАЯ ОШИБКА INIT: " + e.toString());
-                    final String error = "Ошибка Reflection:\n" + e.toString();
-                    runOnUiThread(new Runnable() {
-                        public void run() { textView.setText(error); }
-                    });
-                }
-            }
-        }).start();
+        // --- Инициализация AIDL подключения ---
+        bindToBcmService();
     }
 
+    private void bindToBcmService() {
+        Intent intent = new Intent();
+        // Точные пути из реверса M6Drive
+        intent.setComponent(new ComponentName(
+                "com.adayo.midware.bcmservice",
+                "com.adayo.midware.bcmservice.Controller.BcmService"
+        ));
+
+        try {
+            boolean bound = bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE);
+            if (!bound) {
+                writeToLog("ОШИБКА: Система отказала в bindService");
+                textView.setText("Ошибка: bindService не удался");
+            }
+        } catch (Exception e) {
+            writeToLog("ИСКЛЮЧЕНИЕ при bindService: " + e.toString());
+            textView.setText("Ошибка подключения:\n" + e.getMessage());
+        }
+    }
+
+    private ServiceConnection serviceConnection = new ServiceConnection() {
+        @Override
+        public void onServiceConnected(ComponentName name, IBinder service) {
+            bcmService = service;
+            isServiceConnected = true;
+            writeToLog("УСПЕХ: Подключено к Adayo BCM Service");
+            runOnUiThread(new Runnable() {
+                public void run() { textView.setText("Служба BCM подключена!\nНажмите СТАРТ"); }
+            });
+        }
+
+        @Override
+        public void onServiceDisconnected(ComponentName name) {
+            bcmService = null;
+            isServiceConnected = false;
+            writeToLog("ВНИМАНИЕ: Служба BCM отключена");
+        }
+    };
+
     private void startPolling() {
-        if (!isCarReady) {
-            textView.setText("Ошибка: Car API еще не готов или недоступен.");
+        if (!isServiceConnected) {
+            textView.setText("Ошибка: Служба BCM еще не подключена.");
             return;
         }
         if (isRunning) return;
         isRunning = true;
-        
         writeToLog("=== СТАРТ ОПРОСА ===");
         handler.post(pollRunnable);
     }
@@ -139,63 +152,67 @@ public class MainActivity extends Activity {
     };
 
     private void readData() {
+        if (bcmService == null) return;
+
         StringBuilder sb = new StringBuilder();
         String time = timeFormat.format(new Date());
-        
-        String speed = getPropValue("PERF_VEHICLE_SPEED", "км/ч");
-        String rpm = getPropValue("ENGINE_RPM", "об/мин");
-        String temp = getPropValue("ENGINE_COOLANT_TEMP", "°C");
-        String fuel = getPropValue("FUEL_LEVEL", "мл");
 
-        sb.append("Скорость: ").append(speed).append("\n");
-        sb.append("Обороты: ").append(rpm).append("\n");
-        sb.append("Темп. ОЖ: ").append(temp).append("\n");
-        sb.append("Топливо: ").append(fuel).append("\n");
+        boolean success = readBcmCache();
+
+        if (success) {
+            sb.append("Кэш получен! Длина: 179\n\n");
+            // Выводим для примера то, что нашли в реверсе
+            sb.append("Idx 59 (Напряж?): ").append(cachedData[59]).append("\n");
+            sb.append("Idx 102 (Темп КПП?): ").append(cachedData[102]).append("\n");
+            sb.append("Idx 0 (Сырое): ").append(cachedData[0]).append("\n\n");
+            sb.append("Остальные данные пишутся в лог.");
+
+            writeToLog(String.format(Locale.US, "[%s] Cache OK | Val59: %d | Val102: %d | Val0: %d", time, cachedData[59], cachedData[102], cachedData[0]));
+        } else {
+            sb.append("Не удалось прочитать кэш.\nПроверьте логи.");
+            writeToLog("[" + time + "] ОШИБКА чтения кэша");
+        }
 
         textView.setText(sb.toString());
-
-        String logLine = String.format(Locale.US, "[%s] Speed: %s | RPM: %s | Temp: %s | Fuel: %s", 
-            time, speed, rpm, temp, fuel);
-        writeToLog(logLine);
     }
 
-    private String getPropValue(String propName, String unit) {
+    private boolean readBcmCache() {
+        Parcel data = Parcel.obtain();
+        Parcel reply = Parcel.obtain();
         try {
-            Class<?> propIdsClass = Class.forName("android.car.VehiclePropertyIds");
-            Field propField = propIdsClass.getField(propName);
-            int propId = propField.getInt(null);
-
-            Method getPropertyMethod = propertyManager.getClass().getMethod("getProperty", int.class, int.class);
-            Object carPropertyValue = getPropertyMethod.invoke(propertyManager, propId, 0);
-
-            if (carPropertyValue == null) return "null";
-
-            Method getStatusMethod = carPropertyValue.getClass().getMethod("getStatus");
-            int status = (int) getStatusMethod.invoke(carPropertyValue);
-
-            if (status != 0) return "Недоступно(St:" + status + ")";
-
-            Method getValueMethod = carPropertyValue.getClass().getMethod("getValue");
-            Object value = getValueMethod.invoke(carPropertyValue);
-
-            if (value instanceof Float) return String.format(Locale.US, "%.1f %s", (Float) value, unit);
-            if (value instanceof Integer) return value + " " + unit;
-            if (value instanceof Double) return String.format(Locale.US, "%.1f %s", (Double) value, unit);
-            return value.toString() + " " + unit;
-
+            // Строка-идентификатор интерфейса из реверса
+            data.writeInterfaceToken("com.adayo.module.bcmproxy.IBcmServiceAIDL");
+            
+            // Метод 4 - это чтение кэша (согласно реверсу)
+            boolean transactSuccess = bcmService.transact(4, data, reply, 0);
+            
+            if (transactSuccess) {
+                reply.readException();
+                int successFlag = reply.readInt();
+                // 716 байт = 179 * 4 байта (int)
+                if (successFlag == 1 && reply.dataAvail() == 716) {
+                    for (int i = 0; i < 179; i++) {
+                        cachedData[i] = reply.readInt();
+                    }
+                    return true;
+                }
+            }
+        } catch (RemoteException e) {
+            writeToLog("RemoteException: " + e.getMessage());
         } catch (Exception e) {
-            return "Ошибка: " + (e.getCause() != null ? e.getCause().getClass().getSimpleName() : e.getClass().getSimpleName());
+            writeToLog("Exception при чтении Parcel: " + e.getMessage());
+        } finally {
+            data.recycle();
+            reply.recycle();
         }
+        return false;
     }
 
-    // Ищем нужный файл, если текущего нет или он переполнен
     private File getNextLogFile() {
         if (logDir == null) return null;
-        
         int maxIndex = 0;
         Pattern pattern = Pattern.compile("carlog(\\d+)\\.txt");
         File[] files = logDir.listFiles();
-        
         if (files != null) {
             for (File f : files) {
                 Matcher matcher = pattern.matcher(f.getName());
@@ -205,47 +222,34 @@ public class MainActivity extends Activity {
                 }
             }
         }
-        
-        // Если файлов еще нет, начинаем с первого
         if (maxIndex == 0) return new File(logDir, "carlog1.txt");
-        
-        // Проверяем последний существующий файл
         File lastFile = new File(logDir, "carlog" + maxIndex + ".txt");
         if (lastFile.length() < MAX_LOG_SIZE) {
-            return lastFile; // Ему еще есть место, пишем в него
+            return lastFile;
         } else {
-            return new File(logDir, "carlog" + (maxIndex + 1) + ".txt"); // Создаем следующий
+            return new File(logDir, "carlog" + (maxIndex + 1) + ".txt");
         }
     }
 
     private void writeToLog(String message) {
         if (logDir == null) return;
-
-        // Если текущего файла нет (первый запуск) ИЛИ он превысил 5 МБ, запрашиваем новый
         if (logFile == null || logFile.length() >= MAX_LOG_SIZE) {
             logFile = getNextLogFile();
         }
-        
         if (logFile == null) return;
-
         try {
             FileWriter writer = new FileWriter(logFile, true);
             writer.append(message).append("\n");
             writer.close();
-        } catch (IOException e) {
-            // Игнорируем
-        }
+        } catch (IOException ignored) {}
     }
 
     @Override
     protected void onDestroy() {
         super.onDestroy();
         stopPolling();
-        if (carInstance != null) {
-            try {
-                Method disconnect = carInstance.getClass().getMethod("disconnect");
-                disconnect.invoke(carInstance);
-            } catch (Exception ignored) {}
+        if (isServiceConnected) {
+            unbindService(serviceConnection);
         }
     }
 }

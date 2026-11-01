@@ -5,19 +5,24 @@ import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.ServiceConnection;
+import android.content.SharedPreferences;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.os.Binder;
 import android.os.Bundle;
+import android.os.Handler;
 import android.os.IBinder;
+import android.os.Looper;
 import android.os.Parcel;
 import android.os.RemoteException;
 import android.view.Gravity;
 import android.widget.LinearLayout;
 import android.widget.TextView;
+import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
+import java.io.InputStreamReader;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.Locale;
@@ -32,6 +37,10 @@ public class MainActivity extends Activity {
     private IBinder bcmService;
     private boolean isServiceConnected = false;
     private final String CLIENT_NAME = "OBDTester-" + java.util.UUID.randomUUID().toString();
+    private Handler handler = new Handler(Looper.getMainLooper());
+
+    private SharedPreferences prefs;
+    private int[] cachedData = new int[179];
 
     private File logFile;
     private File logDir;
@@ -42,6 +51,7 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         logDir = getExternalFilesDir(null);
+        prefs = getSharedPreferences("OBD_State", MODE_PRIVATE);
 
         LinearLayout rootLayout = new LinearLayout(this);
         rootLayout.setOrientation(LinearLayout.HORIZONTAL);
@@ -82,7 +92,7 @@ public class MainActivity extends Activity {
         tvPower.setTypeface(null, Typeface.BOLD);
         tvPower.setGravity(Gravity.CENTER);
         tvPower.setPadding(0, 20, 0, 0);
-        tvPower.setText("PWR: OFF");
+        tvPower.setText("PWR: " + prefs.getString("pwr", "OFF"));
 
         leftCol.addView(tvSpeed);
         leftCol.addView(tvSpeedLabel);
@@ -100,6 +110,8 @@ public class MainActivity extends Activity {
         tvCoolant = createDataRow(centerCol, "ОЖ:", "-- °C", Color.WHITE, 32, 20);
         tvTransTemp = createDataRow(centerCol, "АКПП:", "-- °C", Color.WHITE, 32, 20);
         tvOutTemp = createDataRow(centerCol, "За бортом:", "-- °C", Color.LTGRAY, 32, 20);
+        
+        restoreLastValues();
         
         // === ПРАВАЯ КОЛОНКА ===
         LinearLayout rightCol = new LinearLayout(this);
@@ -120,6 +132,20 @@ public class MainActivity extends Activity {
         setContentView(rootLayout);
 
         bindToBcmService();
+
+        // Запускаем чтение кэша через Root каждые 2 секунды
+        handler.postDelayed(rootCacheRunnable, 2000);
+    }
+
+    private void restoreLastValues() {
+        int coolant = prefs.getInt("coolant", -100);
+        if (coolant != -100) tvCoolant.setText(String.format(Locale.US, "%d °C", coolant));
+
+        int transTemp = prefs.getInt("trans_temp", -100);
+        if (transTemp != -100) tvTransTemp.setText(String.format(Locale.US, "%d °C", transTemp));
+
+        int outTemp = prefs.getInt("out_temp", -100);
+        if (outTemp != -100) tvOutTemp.setText(String.format(Locale.US, "%d °C", outTemp));
     }
 
     private TextView createDataRow(LinearLayout parent, String label, String defaultValue, int valueColor, int textSize, int padding) {
@@ -143,6 +169,96 @@ public class MainActivity extends Activity {
         row.addView(tvValue);
         parent.addView(row);
         return tvValue;
+    }
+
+    // --- ЧТЕНИЕ КЭША ЧЕРЕЗ ROOT ---
+    private Runnable rootCacheRunnable = new Runnable() {
+        @Override
+        public void run() {
+            readCacheViaRoot();
+            handler.postDelayed(this, 2000); // Раз в 2 секунды
+        }
+    };
+
+    private void readCacheViaRoot() {
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    // Вызов Binder-сервиса через консольную команду под Root
+                    String cmd = "su -c service call com.adayo.midware.bcmservice 4 s16 com.adayo.module.bcmproxy.IBcmServiceAIDL";
+                    Process process = Runtime.getRuntime().exec(cmd);
+                    BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
+                    String line;
+                    StringBuilder sb = new StringBuilder();
+                    while ((line = reader.readLine()) != null) {
+                        sb.append(line);
+                    }
+                    reader.close();
+                    process.waitFor();
+
+                    String output = sb.toString();
+                    // В логе увидим, что вернула команда
+                    writeToLog("ROOT-КЭШ: " + output);
+
+                    // Ищем hex-массив в ответе (обычно он начинается с Result: Parcel(...))
+                    if (output.contains("Result: Parcel")) {
+                        parseRootCacheOutput(output);
+                    }
+                } catch (Exception e) {
+                    writeToLog("Ошибка Root: " + e.toString());
+                }
+            }
+        }).start();
+    }
+
+    // Парсим ответ от service call
+    private void parseRootCacheOutput(String output) {
+        try {
+            // Ищем первую скобку и последнюю
+            int start = output.indexOf('(');
+            int end = output.lastIndexOf(')');
+            if (start == -1 || end == -1) return;
+
+            String hexData = output.substring(start + 1, end).replace(" ", "");
+            
+            // В Android Parcel данные разбиты на слова по 4 байта (8 hex символов)
+            // Первые 8 символов (или около того) - это служебная информация (длина и т.д.)
+            // Нам нужно пропустить заголовок и достать 716 байт данных (179 * 4)
+            
+            // Проверяем, что данных достаточно
+            if (hexData.length() < 716 * 2) return; 
+
+            // Обычно ответ от service call выглядит так: 00000000 00000000 00000000 00000001 ... (дальше сами данные)
+            // Найдем место, где начинаются наши данные. 
+            // В идеале нужно прочитать длину и пропустить заголовок, но для простоты:
+            // Просто берем последние 1432 символа (716 * 2) - это и будут наши 179 int-ов.
+            
+            String dataHex = hexData.substring(hexData.length() - (716 * 2));
+            
+            for (int i = 0; i < 179; i++) {
+                String hexInt = dataHex.substring(i * 8, (i + 1) * 8);
+                // Конвертируем hex в int (Little Endian)
+                int value = (int) Long.parseLong(hexInt.substring(6, 8) + hexInt.substring(4, 6) + hexInt.substring(2, 4) + hexInt.substring(0, 2), 16);
+                cachedData[i] = value;
+            }
+
+            final int transTemp = cachedData[102];
+            if (transTemp > 0 && transTemp < 150) {
+                runOnUiThread(new Runnable() {
+                    public void run() {
+                        tvTransTemp.setText(String.format(Locale.US, "%d °C", transTemp));
+                        prefs.edit().putInt("trans_temp", transTemp).apply();
+                    }
+                });
+            }
+            
+            // В лог для отладки
+            writeToLog("ROOT-КЭШ: АКПП=" + cachedData[102] + " | ОЖ=" + cachedData[59]); // 59 может быть ОЖ или напряжение
+
+        } catch (Exception e) {
+            writeToLog("Ошибка парсинга: " + e.toString());
+        }
     }
 
     private void bindToBcmService() {
@@ -217,13 +333,22 @@ public class MainActivity extends Activity {
                 tvGear.setText(g); 
                 break;
             case "BCM_Coolant_R":
-                if (value > 0 && value <= 120) tvCoolant.setText(String.format(Locale.US, "%d °C", value)); 
+                if (value > 0 && value <= 120) {
+                    tvCoolant.setText(String.format(Locale.US, "%d °C", value));
+                    prefs.edit().putInt("coolant", value).apply();
+                }
                 break;
             case "BCM_TRANS_OIL_TEMP_R":
-                if (value > 0 && value <= 150) tvTransTemp.setText(String.format(Locale.US, "%d °C", value)); 
+                if (value > 0 && value <= 150) {
+                    tvTransTemp.setText(String.format(Locale.US, "%d °C", value));
+                    prefs.edit().putInt("trans_temp", value).apply();
+                }
                 break;
             case "BCM_Ext_Temp_R":
-                if (value > -40 && value < 50) tvOutTemp.setText(String.format(Locale.US, "%d °C", value)); 
+                if (value > -40 && value < 50) {
+                    tvOutTemp.setText(String.format(Locale.US, "%d °C", value));
+                    prefs.edit().putInt("out_temp", value).apply();
+                }
                 break;
             case "BCM_SystemPower_R":
                 String pwr = "?";
@@ -232,6 +357,7 @@ public class MainActivity extends Activity {
                 else if (value == 2) pwr = "IGN";
                 else if (value == 3) pwr = "RUN";
                 tvPower.setText("PWR: " + pwr);
+                prefs.edit().putString("pwr", pwr).apply();
                 break;
 
             case "BCM_DriverDoorSts": updateDoorState(tvDoorDriver, value); break;
@@ -300,5 +426,6 @@ public class MainActivity extends Activity {
     @Override
     protected void onDestroy() {
         super.onDestroy();
+        handler.removeCallbacksAndMessages(null);
     }
 }

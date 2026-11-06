@@ -34,12 +34,9 @@ public class MainActivity extends Activity {
     private final String CLIENT_NAME = "OBDTester-" + java.util.UUID.randomUUID().toString();
     private Handler handler = new Handler(Looper.getMainLooper());
 
-    private int[] cachedData = new int[179];
-    
     private File logFile;
     private File logDir;
     private SimpleDateFormat timeFormat = new SimpleDateFormat("HH:mm:ss.SSS", Locale.US);
-    private static final long MAX_LOG_SIZE = 5 * 1024 * 1024; // 5MB
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -132,7 +129,7 @@ public class MainActivity extends Activity {
 
         bindToBcmService();
         
-        // Запускаем опрос раз в 2 секунды
+        // Запускаем прямой опрос параметров раз в 2 секунды
         handler.postDelayed(pollRunnable, 2000);
     }
 
@@ -159,87 +156,73 @@ public class MainActivity extends Activity {
         return tvValue;
     }
 
-    private Runnable pollRunnable = new Runnable() {
-        @Override
-        public void run() {
-            if (isServiceConnected && bcmService != null) {
-                readBcmInfo();
-                readCoolantDirectly();
-            }
-            handler.postDelayed(this, 2000);
-        }
-    };
-
-    private void readBcmInfo() {
+    // ==========================================
+    // МЕТОД ПРЯМОГО ЗАПРОСА (getDeviceInfo)
+    // ==========================================
+    private int getDeviceValue(String key) {
+        if (bcmService == null) return Integer.MIN_VALUE;
         Parcel data = Parcel.obtain();
         Parcel reply = Parcel.obtain();
         try {
             data.writeInterfaceToken("com.adayo.module.bcmproxy.IBcmServiceAIDL");
-            // transact 4 - getBcmInfo()
-            if (bcmService.transact(4, data, reply, 0)) {
-                reply.readException();
-                if (reply.readInt() != 0) {
-                    for (int i = 0; i < 179; i++) {
-                        cachedData[i] = reply.readInt();
-                    }
-                    
-                    final int rawVolt = cachedData[59];
-                    final int rawTransTemp = cachedData[102];
-                    final String time = timeFormat.format(new Date());
-
-                    // ЛОГ: Что нам вернул кэш
-                    writeToLog(String.format(Locale.US, "[%s] [КЭШ BcmInfo] АКБ(raw)=%d | АКПП=%d", time, rawVolt, rawTransTemp));
-
-                    runOnUiThread(new Runnable() {
-                        public void run() {
-                            if (rawVolt > 50 && rawVolt < 300) {
-                                tvVoltage.setText(String.format(Locale.US, "АКБ: %.1f В", rawVolt / 10.0));
-                            }
-                            if (rawTransTemp > -40 && rawTransTemp < 150) {
-                                tvTransTemp.setText(String.format(Locale.US, "%d °C", rawTransTemp));
-                            }
-                        }
-                    });
-                }
-            }
-        } catch (Exception ignored) {
-        } finally {
-            data.recycle();
-            reply.recycle();
-        }
-    }
-
-    private void readCoolantDirectly() {
-        Parcel data = Parcel.obtain();
-        Parcel reply = Parcel.obtain();
-        try {
-            data.writeInterfaceToken("com.adayo.module.bcmproxy.IBcmServiceAIDL");
-            data.writeString("BCM"); // type
-            data.writeString("BCM_Coolant_R"); // key
+            data.writeString("BCM"); // Тип
+            data.writeString(key);   // Ключ параметра
             
             // transact 7 - getDeviceInfo()
             if (bcmService.transact(7, data, reply, 0)) {
                 reply.readException();
-                final int coolantVal = reply.readInt();
-                final String time = timeFormat.format(new Date());
-
-                // ЛОГ: Что нам вернул прямой запрос
-                writeToLog(String.format(Locale.US, "[%s] [ЗАПРОС DeviceInfo] ОЖ=%d", time, coolantVal));
-
-                if (coolantVal > -40 && coolantVal < 150) {
-                    runOnUiThread(new Runnable() {
-                        public void run() {
-                            tvCoolant.setText(String.format(Locale.US, "%d °C", coolantVal));
-                        }
-                    });
-                }
+                return reply.readInt();
             }
         } catch (Exception ignored) {
         } finally {
             data.recycle();
             reply.recycle();
         }
+        return Integer.MIN_VALUE;
     }
+
+    private Runnable pollRunnable = new Runnable() {
+        @Override
+        public void run() {
+            if (isServiceConnected && bcmService != null) {
+                // 1. Температура ОЖ (уже проверено, работает)
+                final int coolant = getDeviceValue("BCM_Coolant_R");
+                // 2. Температура АКПП
+                final int transTemp = getDeviceValue("BCM_TRANS_OIL_TEMP_R");
+                // 3. Температура за бортом
+                final int outTemp = getDeviceValue("BCM_Ext_Temp_R");
+                // 4. Напряжение АКБ
+                final int volt = getDeviceValue("BCM_InputVoltForBCM");
+
+                String time = timeFormat.format(new Date());
+                writeToLog(String.format(Locale.US, "[%s] ЗАПРОС: ОЖ=%d | АКПП=%d | Борт=%d | Вольт=%d", time, coolant, transTemp, outTemp, volt));
+
+                runOnUiThread(new Runnable() {
+                    public void run() {
+                        // ОЖ (отсекаем 143 и -40)
+                        if (coolant > 0 && coolant <= 120) {
+                            tvCoolant.setText(String.format(Locale.US, "%d °C", coolant));
+                        }
+                        // АКПП (отсекаем мусор)
+                        if (transTemp > -40 && transTemp <= 150) {
+                            tvTransTemp.setText(String.format(Locale.US, "%d °C", transTemp));
+                        }
+                        // За бортом (отсекаем -40 и 87)
+                        if (outTemp > -40 && outTemp < 50) {
+                            tvOutTemp.setText(String.format(Locale.US, "%d °C", outTemp));
+                        }
+                        // Вольтаж (если пришел в милливольтах > 1000, переводим в Вольты. Если в десятых 120-150 - делим на 10)
+                        if (volt > 1000) {
+                            tvVoltage.setText(String.format(Locale.US, "АКБ: %.1f В", volt / 1000.0));
+                        } else if (volt > 50 && volt < 300) {
+                            tvVoltage.setText(String.format(Locale.US, "АКБ: %.1f В", volt / 10.0));
+                        }
+                    }
+                });
+            }
+            handler.postDelayed(this, 2000);
+        }
+    };
 
     private void bindToBcmService() {
         Intent intent = new Intent();
@@ -282,10 +265,6 @@ public class MainActivity extends Activity {
                 String signalName = data.readString();
                 final int signalValue = data.readInt();
 
-                // ЛОГ: События от машины
-                String time = timeFormat.format(new Date());
-                writeToLog(String.format(Locale.US, "[%s] [СОБЫТИЕ] %s = %d", time, signalName, signalValue));
-
                 runOnUiThread(new Runnable() {
                     public void run() { updateUI(signalName, signalValue); }
                 });
@@ -297,6 +276,7 @@ public class MainActivity extends Activity {
         }
     };
 
+    // Тут оставляем только быстрые события (Скорость, Двери, Передачи, PWR)
     private void updateUI(String signalName, int value) {
         if (signalName == null) return;
         
@@ -310,10 +290,6 @@ public class MainActivity extends Activity {
                 else if (value == 7) g = "R";
                 else if (value == 8) g = "M";
                 tvGear.setText(g); break;
-            case "BCM_Coolant_R":
-                if (value > 0 && value <= 120) tvCoolant.setText(String.format(Locale.US, "%d °C", value)); break;
-            case "BCM_Ext_Temp_R":
-                if (value > -40 && value < 50) tvOutTemp.setText(String.format(Locale.US, "%d °C", value)); break;
             case "BCM_SystemPower_R":
                 String pwr = "?";
                 if (value == 0) pwr = "OFF";

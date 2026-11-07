@@ -128,8 +128,6 @@ public class MainActivity extends Activity {
         setContentView(rootLayout);
 
         bindToBcmService();
-        
-        // Запускаем прямой опрос параметров раз в 2 секунды
         handler.postDelayed(pollRunnable, 2000);
     }
 
@@ -156,19 +154,14 @@ public class MainActivity extends Activity {
         return tvValue;
     }
 
-    // ==========================================
-    // МЕТОД ПРЯМОГО ЗАПРОСА (getDeviceInfo)
-    // ==========================================
     private int getDeviceValue(String key) {
         if (bcmService == null) return Integer.MIN_VALUE;
         Parcel data = Parcel.obtain();
         Parcel reply = Parcel.obtain();
         try {
             data.writeInterfaceToken("com.adayo.module.bcmproxy.IBcmServiceAIDL");
-            data.writeString("BCM"); // Тип
-            data.writeString(key);   // Ключ параметра
-            
-            // transact 7 - getDeviceInfo()
+            data.writeString("BCM");
+            data.writeString(key);
             if (bcmService.transact(7, data, reply, 0)) {
                 reply.readException();
                 return reply.readInt();
@@ -181,41 +174,60 @@ public class MainActivity extends Activity {
         return Integer.MIN_VALUE;
     }
 
+    // НОВЫЙ МЕТОД ДЛЯ MCU (ВОЛЬТАЖ)
+    private int getMcuVoltage() {
+        if (bcmService == null) return -1;
+        Parcel data = Parcel.obtain();
+        Parcel reply = Parcel.obtain();
+        try {
+            data.writeInterfaceToken("com.adayo.module.bcmproxy.IBcmServiceAIDL");
+            // transact 12 - getDeviceMcuInfo()
+            if (bcmService.transact(12, data, reply, 0)) {
+                reply.readException();
+                return reply.readInt();
+            }
+        } catch (Exception ignored) {
+        } finally {
+            data.recycle();
+            reply.recycle();
+        }
+        return -1;
+    }
+
     private Runnable pollRunnable = new Runnable() {
         @Override
         public void run() {
             if (isServiceConnected && bcmService != null) {
-                // 1. Температура ОЖ (уже проверено, работает)
                 final int coolant = getDeviceValue("BCM_Coolant_R");
-                // 2. Температура АКПП
                 final int transTemp = getDeviceValue("BCM_TRANS_OIL_TEMP_R");
-                // 3. Температура за бортом
                 final int outTemp = getDeviceValue("BCM_Ext_Temp_R");
-                // 4. Напряжение АКБ
-                final int volt = getDeviceValue("BCM_InputVoltForBCM");
+                
+                // Запрашиваем вольтаж из MCU!
+                final int mcuVolt = getMcuVoltage();
 
                 String time = timeFormat.format(new Date());
-                writeToLog(String.format(Locale.US, "[%s] ЗАПРОС: ОЖ=%d | АКПП=%d | Борт=%d | Вольт=%d", time, coolant, transTemp, outTemp, volt));
+                writeToLog(String.format(Locale.US, "[%s] ЗАПРОС: ОЖ=%d | АКПП=%d | Борт=%d | MCU=%d", time, coolant, transTemp, outTemp, mcuVolt));
 
                 runOnUiThread(new Runnable() {
                     public void run() {
-                        // ОЖ (отсекаем 143 и -40)
-                        if (coolant > 0 && coolant <= 120) {
+                        // Фильтруем 143
+                        if (coolant > 0 && coolant < 120) {
                             tvCoolant.setText(String.format(Locale.US, "%d °C", coolant));
                         }
-                        // АКПП (отсекаем мусор)
-                        if (transTemp > -40 && transTemp <= 150) {
+                        // Фильтруем мусор
+                        if (transTemp > -40 && transTemp < 150) {
                             tvTransTemp.setText(String.format(Locale.US, "%d °C", transTemp));
                         }
-                        // За бортом (отсекаем -40 и 87)
+                        // Фильтруем -40
                         if (outTemp > -40 && outTemp < 50) {
                             tvOutTemp.setText(String.format(Locale.US, "%d °C", outTemp));
                         }
-                        // Вольтаж (если пришел в милливольтах > 1000, переводим в Вольты. Если в десятых 120-150 - делим на 10)
-                        if (volt > 1000) {
-                            tvVoltage.setText(String.format(Locale.US, "АКБ: %.1f В", volt / 1000.0));
-                        } else if (volt > 50 && volt < 300) {
-                            tvVoltage.setText(String.format(Locale.US, "АКБ: %.1f В", volt / 10.0));
+                        
+                        // Вольтаж MCU (если пришел 138 -> 13.8 В)
+                        if (mcuVolt > 50 && mcuVolt < 300) {
+                            tvVoltage.setText(String.format(Locale.US, "АКБ: %.1f В", mcuVolt / 10.0));
+                        } else if (mcuVolt > 1000) {
+                            tvVoltage.setText(String.format(Locale.US, "АКБ: %.1f В", mcuVolt / 1000.0));
                         }
                     }
                 });
@@ -276,7 +288,6 @@ public class MainActivity extends Activity {
         }
     };
 
-    // Тут оставляем только быстрые события (Скорость, Двери, Передачи, PWR)
     private void updateUI(String signalName, int value) {
         if (signalName == null) return;
         

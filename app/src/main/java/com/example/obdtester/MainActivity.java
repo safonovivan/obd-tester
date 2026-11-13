@@ -35,7 +35,6 @@ public class MainActivity extends Activity {
     private final String CLIENT_NAME = "OBDTester-" + java.util.UUID.randomUUID().toString();
     private Handler handler = new Handler(Looper.getMainLooper());
 
-    // Для отслеживания направления руля
     private int currentSteeringSign = 0; 
     
     private File logFile;
@@ -52,7 +51,7 @@ public class MainActivity extends Activity {
         rootLayout.setBackgroundColor(Color.BLACK);
         rootLayout.setPadding(20, 10, 20, 10);
 
-        // === ЛЕВАЯ КОЛОНКА (Скорость) ===
+        // === 1. ЛЕВАЯ КОЛОНКА (Скорость, Передача, PWR, АКБ) ===
         LinearLayout leftCol = new LinearLayout(this);
         leftCol.setOrientation(LinearLayout.VERTICAL);
         leftCol.setGravity(Gravity.CENTER);
@@ -68,7 +67,7 @@ public class MainActivity extends Activity {
 
         TextView tvSpeedLabel = new TextView(this);
         tvSpeedLabel.setTextColor(Color.GRAY);
-        tvSpeedLabel.setTextSize(25);
+        tvSpeedLabel.setTextSize(22);
         tvSpeedLabel.setGravity(Gravity.CENTER);
         tvSpeedLabel.setText("км/ч");
 
@@ -82,14 +81,14 @@ public class MainActivity extends Activity {
 
         tvPower = new TextView(this);
         tvPower.setTextColor(Color.LTGRAY);
-        tvPower.setTextSize(22);
+        tvPower.setTextSize(20);
         tvPower.setTypeface(null, Typeface.BOLD);
         tvPower.setGravity(Gravity.CENTER);
         tvPower.setText("PWR: --");
 
         tvVoltage = new TextView(this);
         tvVoltage.setTextColor(Color.YELLOW);
-        tvVoltage.setTextSize(24);
+        tvVoltage.setTextSize(22);
         tvVoltage.setTypeface(null, Typeface.BOLD);
         tvVoltage.setGravity(Gravity.CENTER);
         tvVoltage.setPadding(0, 5, 0, 0);
@@ -101,40 +100,41 @@ public class MainActivity extends Activity {
         leftCol.addView(tvPower);
         leftCol.addView(tvVoltage);
 
-        // === ЦЕНТРАЛЬНАЯ КОЛОНКА (Температуры) ===
+        // === 2. ЦЕНТРАЛЬНАЯ КОЛОНКА (Температуры) ===
         LinearLayout centerCol = new LinearLayout(this);
         centerCol.setOrientation(LinearLayout.VERTICAL);
         centerCol.setGravity(Gravity.CENTER_VERTICAL);
         centerCol.setPadding(10, 0, 10, 0);
-        LinearLayout.LayoutParams centerParams = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 0.8f);
+        LinearLayout.LayoutParams centerParams = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 0.9f);
         centerCol.setLayoutParams(centerParams);
 
-        tvCoolant = createDataRow(centerCol, "ОЖ:", "-- °C", Color.WHITE, 30, 15);
-        tvTransTemp = createDataRow(centerCol, "АКПП:", "-- °C", Color.WHITE, 30, 15);
-        tvOutTemp = createDataRow(centerCol, "За бортом:", "-- °C", Color.LTGRAY, 30, 15);
+        tvCoolant = createDataRow(centerCol, "ОЖ:", "-- °C", Color.WHITE, 28, 15);
+        tvTransTemp = createDataRow(centerCol, "АКПП:", "-- °C", Color.WHITE, 28, 15);
+        tvOutTemp = createDataRow(centerCol, "За бортом:", "-- °C", Color.LTGRAY, 28, 15);
 
-        // === 3-Я КОЛОНКА (Двери) ===
+        // === 3. КОЛОНКА ДВЕРЕЙ ===
         LinearLayout doorCol = new LinearLayout(this);
         doorCol.setOrientation(LinearLayout.VERTICAL);
         doorCol.setGravity(Gravity.CENTER_VERTICAL);
-        LinearLayout.LayoutParams doorParams = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 0.8f);
+        doorCol.setPadding(10, 0, 10, 0);
+        LinearLayout.LayoutParams doorParams = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1.1f);
         doorCol.setLayoutParams(doorParams);
 
-        tvDoorDriver = createDataRow(doorCol, "Водитель:", "Закрыто", Color.LTGRAY, 26, 12);
-        tvDoorPass = createDataRow(doorCol, "Пассажир:", "Закрыто", Color.LTGRAY, 26, 12);
-        tvDoorRL = createDataRow(doorCol, "Зад. левая:", "Закрыто", Color.LTGRAY, 26, 12);
-        tvDoorRR = createDataRow(doorCol, "Зад. правая:", "Закрыто", Color.LTGRAY, 26, 12);
-        tvDoorTrunk = createDataRow(doorCol, "Багажник:", "Закрыто", Color.LTGRAY, 26, 12);
+        tvDoorDriver = createDataRow(doorCol, "Водитель:", "Закрыто", Color.LTGRAY, 22, 12);
+        tvDoorPass = createDataRow(doorCol, "Пассажир:", "Закрыто", Color.LTGRAY, 22, 12);
+        tvDoorRL = createDataRow(doorCol, "Зад. левая:", "Закрыто", Color.LTGRAY, 22, 12);
+        tvDoorRR = createDataRow(doorCol, "Зад. правая:", "Закрыто", Color.LTGRAY, 22, 12);
+        tvDoorTrunk = createDataRow(doorCol, "Багажник:", "Закрыто", Color.LTGRAY, 22, 12);
 
-        // === 4-Я КОЛОНКА (Руль, Старт-Стоп) ===
+        // === 4. КОЛОНКА РУЛЬ / СТАРТ-СТОП ===
         LinearLayout newCol = new LinearLayout(this);
         newCol.setOrientation(LinearLayout.VERTICAL);
         newCol.setGravity(Gravity.CENTER_VERTICAL);
-        LinearLayout.LayoutParams newParams = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 0.8f);
+        LinearLayout.LayoutParams newParams = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 0.9f);
         newCol.setLayoutParams(newParams);
 
-        tvSteering = createDataRow(newCol, "Руль:", "-- °", Color.CYAN, 28, 15);
-        tvStartStop = createDataRow(newCol, "Ст-Стоп:", "--", Color.LTGRAY, 28, 15);
+        tvSteering = createDataRow(newCol, "Руль:", "-- °", Color.CYAN, 24, 15);
+        tvStartStop = createDataRow(newCol, "Ст-Стоп:", "--", Color.LTGRAY, 24, 15);
 
         rootLayout.addView(leftCol);
         rootLayout.addView(centerCol);
@@ -146,6 +146,7 @@ public class MainActivity extends Activity {
         handler.postDelayed(pollRunnable, 2000);
     }
 
+    // ИСПРАВЛЕННЫЙ МЕТОД: Используем веса (weight) для адаптации текста
     private TextView createDataRow(LinearLayout parent, String label, String defaultValue, int valueColor, int textSize, int padding) {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
@@ -155,13 +156,18 @@ public class MainActivity extends Activity {
         tvLabel.setTextColor(Color.GRAY);
         tvLabel.setTextSize(textSize);
         tvLabel.setText(label);
-        tvLabel.setWidth(200); 
+        // Лейбл занимает 1.0 часть ширины строки
+        LinearLayout.LayoutParams labelParams = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.0f);
+        tvLabel.setLayoutParams(labelParams);
 
         TextView tvValue = new TextView(this);
         tvValue.setTextColor(valueColor);
         tvValue.setTextSize(textSize);
         tvValue.setTypeface(null, Typeface.BOLD);
         tvValue.setText(defaultValue);
+        // Значение занимает 1.2 части ширины строки (чуть больше, чтобы не сжималось)
+        LinearLayout.LayoutParams valueParams = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.2f);
+        tvValue.setLayoutParams(valueParams);
 
         row.addView(tvLabel);
         row.addView(tvValue);
@@ -301,7 +307,6 @@ public class MainActivity extends Activity {
             case "BCM_RRDoorSts": updateDoorState(tvDoorRR, value); break;
             case "BCM_RearLidSts": updateDoorState(tvDoorTrunk, value); break;
             
-            // === РУЛЬ (МГНОВЕННО ИЗ СОБЫТИЙ) ===
             case "BCM_SteeringWheelAngle_R":
                 if (value >= 0 && value < 9000) {
                     float angle = value / 10.0f;

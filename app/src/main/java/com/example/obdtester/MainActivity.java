@@ -181,12 +181,16 @@ public class MainActivity extends Activity {
                 final int coolant = getDeviceValue("BCM_Coolant_R");
                 final int transTemp = getDeviceValue("BCM_TRANS_OIL_TEMP_R");
                 final int outTemp = getDeviceValue("BCM_Ext_Temp_R");
+                
+                // ВОТ ОН, ПРАВИЛЬНЫЙ КЛЮЧ!
+                final int volt = getDeviceValue("BCM_BattVolt_R");
 
                 String time = timeFormat.format(new Date());
-                writeToLog(String.format(Locale.US, "[%s] ЗАПРОС: ОЖ=%d | АКПП=%d | Борт=%d", time, coolant, transTemp, outTemp));
+                writeToLog(String.format(Locale.US, "[%s] ЗАПРОС: ОЖ=%d | АКПП=%d | Борт=%d | АКБ=%d", time, coolant, transTemp, outTemp, volt));
 
                 runOnUiThread(new Runnable() {
                     public void run() {
+                        // ОЖ в этой системе отдается в градусах (75 = 75C), делить не надо
                         if (coolant > 0 && coolant < 120) {
                             tvCoolant.setText(String.format(Locale.US, "%d °C", coolant));
                         }
@@ -195,6 +199,11 @@ public class MainActivity extends Activity {
                         }
                         if (outTemp > -40 && outTemp < 50) {
                             tvOutTemp.setText(String.format(Locale.US, "%d °C", outTemp));
+                        }
+                        
+                        // ВОЛЬТАЖ: 1320 -> 13.2 В
+                        if (volt > 0) {
+                            tvVoltage.setText(String.format(Locale.US, "АКБ: %.1f В", volt / 100.0f));
                         }
                     }
                 });
@@ -224,14 +233,10 @@ public class MainActivity extends Activity {
                 if (!"com.adayo.module.bcmproxy.IBcmServiceAIDL".equals(service.getInterfaceDescriptor())) return;
             } catch (RemoteException e) { return; }
 
-            // Подписка на события (Скорость, Двери)
             if (subscribeToBcm()) {
                 isServiceConnected = true;
                 writeToLog("=== ПОДПИСКА НА СОБЫТИЯ ОФОРМЛЕНА ===");
             }
-            
-            // Подписка на MCU (Вольтаж)
-            subscribeToMcu();
         }
         @Override
         public void onServiceDisconnected(ComponentName name) {
@@ -240,9 +245,6 @@ public class MainActivity extends Activity {
         }
     };
 
-    // ==========================================
-    // КОЛБЭК ДЛЯ СТАРЫХ СОБЫТИЙ
-    // ==========================================
     private final IBinder bcmCallback = new Binder() {
         @Override
         protected boolean onTransact(int code, Parcel data, Parcel reply, int flags) throws RemoteException {
@@ -261,71 +263,6 @@ public class MainActivity extends Activity {
             return super.onTransact(code, data, reply, flags);
         }
     };
-
-    // ==========================================
-    // КОЛБЭК ДЛЯ MCU (ВОЛЬТАЖ) - НОВОЕ!
-    // ==========================================
-    private final IBinder mcuCallback = new Binder() {
-        @Override
-        protected boolean onTransact(int code, Parcel data, Parcel reply, int flags) throws RemoteException {
-            if (code == 1) { // IMcuClientCallBack.onUpdataMcuInfo
-                data.enforceInterface("com.adayo.module.bcmproxy.IMcuClientCallBack");
-                int rawInt = data.readInt();
-
-                // Распаковываем int в массив байт
-                byte[] bArr = new byte[4];
-                bArr[0] = (byte) ((rawInt >> 24) & 0xFF);
-                bArr[1] = (byte) ((rawInt >> 16) & 0xFF);
-                bArr[2] = (byte) ((rawInt >> 8) & 0xFF);
-                bArr[3] = (byte) (rawInt & 0xFF);
-
-                // Применяем логику из McuVoltageDecoder
-                if ((bArr[0] & 0xFF) == 131 && (bArr[1] & 0xFF) == 5) {
-                    int i = bArr[2] & 0xFF;
-                    if (i >= 60 && i <= 200) {
-                        final float volts = i / 10.0f;
-                        String time = timeFormat.format(new Date());
-                        writeToLog(String.format(Locale.US, "[%s] MCU БАТАРЕЯ: %.1f В", time, volts));
-                        
-                        runOnUiThread(new Runnable() {
-                            public void run() {
-                                tvVoltage.setText(String.format(Locale.US, "АКБ: %.1f В", volts));
-                            }
-                        });
-                    }
-                } else {
-                    // Для отладки, если приходят другие пакеты
-                    writeToLog(String.format(Locale.US, "MCU РАЗНОЕ: [%d, %d, %d, %d]", bArr[0] & 0xFF, bArr[1] & 0xFF, bArr[2] & 0xFF, bArr[3] & 0xFF));
-                }
-
-                if (reply != null) reply.writeNoException();
-                return true;
-            }
-            return super.onTransact(code, data, reply, flags);
-        }
-    };
-
-    private void subscribeToMcu() {
-        if (bcmService == null) return;
-        Parcel data = Parcel.obtain();
-        Parcel reply = Parcel.obtain();
-        try {
-            data.writeInterfaceToken("com.adayo.module.bcmproxy.IBcmServiceAIDL");
-            data.writeString(CLIENT_NAME); // ID клиента
-            data.writeStrongBinder(mcuCallback);
-            // transact(9) - registerMcuClientListener
-            if (bcmService.transact(9, data, reply, 0)) {
-                reply.readException();
-                boolean res = reply.readInt() != 0;
-                writeToLog("ПОДПИСКА НА MCU: " + (res ? "УСПЕХ" : "ОТКАЗ"));
-            }
-        } catch (Exception e) {
-            writeToLog("Ошибка подписки MCU: " + e.toString());
-        } finally {
-            data.recycle();
-            reply.recycle();
-        }
-    }
 
     private void updateUI(String signalName, int value) {
         if (signalName == null) return;
@@ -352,6 +289,11 @@ public class MainActivity extends Activity {
             case "BCM_LRDoorSts": updateDoorState(tvDoorRL, value); break;
             case "BCM_RRDoorSts": updateDoorState(tvDoorRR, value); break;
             case "BCM_RearLidSts": updateDoorState(tvDoorTrunk, value); break;
+            
+            // На случай, если напряжение придет событием
+            case "BCM_BattVolt_R":
+                if (value > 0) tvVoltage.setText(String.format(Locale.US, "АКБ: %.1f В", value / 100.0f));
+                break;
         }
     }
 

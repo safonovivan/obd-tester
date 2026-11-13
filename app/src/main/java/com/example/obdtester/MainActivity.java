@@ -35,9 +35,9 @@ public class MainActivity extends Activity {
     private final String CLIENT_NAME = "OBDTester-" + java.util.UUID.randomUUID().toString();
     private Handler handler = new Handler(Looper.getMainLooper());
 
-    // Для фильтрации руля
-    private int lastSteeringRaw = 0;
-
+    // Для отслеживания направления руля
+    private int currentSteeringSign = 0; 
+    
     private File logFile;
     private File logDir;
     private SimpleDateFormat timeFormat = new SimpleDateFormat("HH:mm:ss.SSS", Locale.US);
@@ -198,14 +198,9 @@ public class MainActivity extends Activity {
                 final int outTemp = getDeviceValue("BCM_Ext_Temp_R");
                 final int volt = getDeviceValue("BCM_BattVolt_R");
                 final int powerStatus = getDeviceValue("BCM_SystemPower_R");
-
-                final int steeringRaw = getDeviceValue("BCM_SteeringWheelAngle_R");
                 final int startStop = getDeviceValue("BCM_Smart_Stop");
 
-                String time = timeFormat.format(new Date());
-                writeToLog(String.format(Locale.US, 
-                    "[%s] ЗАПРОС: PWR=%d | ОЖ=%d | АКПП=%d | Борт=%d | АКБ=%d | Руль=%d | СтСтоп=%d", 
-                    time, powerStatus, coolant, transTemp, outTemp, volt, steeringRaw, startStop));
+                // Руль больше НЕ опрашиваем здесь, чтобы не было задержки!
 
                 runOnUiThread(new Runnable() {
                     public void run() {
@@ -222,18 +217,7 @@ public class MainActivity extends Activity {
                         if (transTemp > -40 && transTemp < 150) tvTransTemp.setText(String.format(Locale.US, "%d °C", transTemp));
                         if (outTemp > -40 && outTemp < 50) tvOutTemp.setText(String.format(Locale.US, "%d °C", outTemp));
                         if (volt > 0) tvVoltage.setText(String.format(Locale.US, "АКБ: %.1f В", volt / 100.0f));
-
-                        // ФИЛЬТР РУЛЯ: Игнорируем прыжки больше 1000 (100 градусов за 2 сек)
-                        if (steeringRaw > 0 && steeringRaw < 9000) {
-                            if (Math.abs(steeringRaw - lastSteeringRaw) < 1000) {
-                                tvSteering.setText(String.format(Locale.US, "%.1f °", steeringRaw / 10.0f));
-                            }
-                            lastSteeringRaw = steeringRaw;
-                        }
-
-                        if (startStop != Integer.MIN_VALUE) {
-                            tvStartStop.setText(startStop == 1 ? "ВКЛ" : "ВЫКЛ");
-                        }
+                        if (startStop != Integer.MIN_VALUE) tvStartStop.setText(startStop == 1 ? "ВКЛ" : "ВЫКЛ");
                     }
                 });
             }
@@ -319,8 +303,18 @@ public class MainActivity extends Activity {
             case "BCM_RRDoorSts": updateDoorState(tvDoorRR, value); break;
             case "BCM_RearLidSts": updateDoorState(tvDoorTrunk, value); break;
             
-            case "BCM_BattVolt_R":
-                if (value > 0) tvVoltage.setText(String.format(Locale.US, "АКБ: %.1f В", value / 100.0f));
+            // === РУЛЬ (МГНОВЕННО ИЗ СОБЫТИЙ) ===
+            case "BCM_SteeringWheelAngle_R":
+                // Защита от диких глюков
+                if (value >= 0 && value < 9000) {
+                    float angle = value / 10.0f;
+                    // Определяем знак (1 - влево, 0 - вправо, зависит от калибровки)
+                    String direction = (currentSteeringSign == 1) ? "◄" : "►";
+                    tvSteering.setText(String.format(Locale.US, "%.1f ° %s", angle, direction));
+                }
+                break;
+            case "BCM_SteeringWheelAngleSign_R":
+                currentSteeringSign = value; // Запоминаем знак
                 break;
         }
     }

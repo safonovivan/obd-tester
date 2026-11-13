@@ -25,19 +25,18 @@ import java.util.Date;
 import java.util.Locale;
 
 public class MainActivity extends Activity {
-    // Элементы левой колонки
     private TextView tvSpeed, tvGear, tvPower, tvVoltage;
-    // Элементы центральной колонки
     private TextView tvCoolant, tvTransTemp, tvOutTemp;
-    // Элементы колонки дверей
     private TextView tvDoorDriver, tvDoorPass, tvDoorRL, tvDoorRR, tvDoorTrunk;
-    // Элементы новой колонки (Руль, Ручник, Пробег, Старт-Стоп, Свет)
-    private TextView tvSteering, tvHandbrake, tvOdometer, tvStartStop, tvLights;
+    private TextView tvSteering, tvStartStop;
     
     private IBinder bcmService;
     private boolean isServiceConnected = false;
     private final String CLIENT_NAME = "OBDTester-" + java.util.UUID.randomUUID().toString();
     private Handler handler = new Handler(Looper.getMainLooper());
+
+    // Для фильтрации руля
+    private int lastSteeringRaw = 0;
 
     private File logFile;
     private File logDir;
@@ -53,7 +52,7 @@ public class MainActivity extends Activity {
         rootLayout.setBackgroundColor(Color.BLACK);
         rootLayout.setPadding(20, 10, 20, 10);
 
-        // === 1. ЛЕВАЯ КОЛОНКА (Скорость, PWR, АКБ) ===
+        // === ЛЕВАЯ КОЛОНКА (Скорость) ===
         LinearLayout leftCol = new LinearLayout(this);
         leftCol.setOrientation(LinearLayout.VERTICAL);
         leftCol.setGravity(Gravity.CENTER);
@@ -102,7 +101,7 @@ public class MainActivity extends Activity {
         leftCol.addView(tvPower);
         leftCol.addView(tvVoltage);
 
-        // === 2. ЦЕНТРАЛЬНАЯ КОЛОНКА (Температуры) ===
+        // === ЦЕНТРАЛЬНАЯ КОЛОНКА (Температуры) ===
         LinearLayout centerCol = new LinearLayout(this);
         centerCol.setOrientation(LinearLayout.VERTICAL);
         centerCol.setGravity(Gravity.CENTER_VERTICAL);
@@ -114,7 +113,7 @@ public class MainActivity extends Activity {
         tvTransTemp = createDataRow(centerCol, "АКПП:", "-- °C", Color.WHITE, 30, 15);
         tvOutTemp = createDataRow(centerCol, "За бортом:", "-- °C", Color.LTGRAY, 30, 15);
 
-        // === 3. КОЛОНКА ДВЕРЕЙ ===
+        // === 3-Я КОЛОНКА (Двери) ===
         LinearLayout doorCol = new LinearLayout(this);
         doorCol.setOrientation(LinearLayout.VERTICAL);
         doorCol.setGravity(Gravity.CENTER_VERTICAL);
@@ -127,18 +126,15 @@ public class MainActivity extends Activity {
         tvDoorRR = createDataRow(doorCol, "Зад. правая:", "Закрыто", Color.LTGRAY, 26, 12);
         tvDoorTrunk = createDataRow(doorCol, "Багажник:", "Закрыто", Color.LTGRAY, 26, 12);
 
-        // === 4. НОВАЯ КОЛОНКА (Руль, Ручник, Пробег, Старт-Стоп, Свет) ===
+        // === 4-Я КОЛОНКА (Руль, Старт-Стоп) ===
         LinearLayout newCol = new LinearLayout(this);
         newCol.setOrientation(LinearLayout.VERTICAL);
         newCol.setGravity(Gravity.CENTER_VERTICAL);
-        LinearLayout.LayoutParams newParams = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 0.9f);
+        LinearLayout.LayoutParams newParams = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 0.8f);
         newCol.setLayoutParams(newParams);
 
-        tvSteering = createDataRow(newCol, "Руль:", "-- °", Color.CYAN, 24, 10);
-        tvHandbrake = createDataRow(newCol, "Ручник:", "--", Color.RED, 24, 10);
-        tvOdometer = createDataRow(newCol, "Пробег:", "-- км", Color.WHITE, 24, 10);
-        tvStartStop = createDataRow(newCol, "Ст-Стоп:", "--", Color.LTGRAY, 24, 10);
-        tvLights = createDataRow(newCol, "Свет:", "--", Color.YELLOW, 22, 10);
+        tvSteering = createDataRow(newCol, "Руль:", "-- °", Color.CYAN, 28, 15);
+        tvStartStop = createDataRow(newCol, "Ст-Стоп:", "--", Color.LTGRAY, 28, 15);
 
         rootLayout.addView(leftCol);
         rootLayout.addView(centerCol);
@@ -159,7 +155,7 @@ public class MainActivity extends Activity {
         tvLabel.setTextColor(Color.GRAY);
         tvLabel.setTextSize(textSize);
         tvLabel.setText(label);
-        tvLabel.setWidth(200);
+        tvLabel.setWidth(200); 
 
         TextView tvValue = new TextView(this);
         tvValue.setTextColor(valueColor);
@@ -197,34 +193,22 @@ public class MainActivity extends Activity {
         @Override
         public void run() {
             if (isServiceConnected && bcmService != null) {
-                // Старые проверенные данные
                 final int coolant = getDeviceValue("BCM_Coolant_R");
                 final int transTemp = getDeviceValue("BCM_TRANS_OIL_TEMP_R");
                 final int outTemp = getDeviceValue("BCM_Ext_Temp_R");
                 final int volt = getDeviceValue("BCM_BattVolt_R");
-                final int powerStatus = getDeviceValue("BCM_SystemPower_R"); // ДОБАВИЛИ PWR
+                final int powerStatus = getDeviceValue("BCM_SystemPower_R");
 
-                // Новые данные
                 final int steeringRaw = getDeviceValue("BCM_SteeringWheelAngle_R");
-                final int handbrake = getDeviceValue("ParkBrakeSts");
-                final int odometer = getDeviceValue("BCM_IP_VehTotDistance_R");
                 final int startStop = getDeviceValue("BCM_Smart_Stop");
-                
-                // Фары и свет
-                final int posLamp = getDeviceValue("BCM_PosLmpOutputSts_R");
-                final int lowBeam = getDeviceValue("BCM_LowBeamSts_R");
-                final int highBeam = getDeviceValue("BCM_HighBeamSts_R");
-                final int frontFog = getDeviceValue("BCM_FrontFogLampSts_R");
-                final int rearFog = getDeviceValue("BCM_RearFogLampSts_R");
 
                 String time = timeFormat.format(new Date());
                 writeToLog(String.format(Locale.US, 
-                    "[%s] ЗАПРОС: PWR=%d | ОЖ=%d | АКПП=%d | Борт=%d | АКБ=%d | Руль=%d | Ручник=%d | Пробег=%d | СтСтоп=%d | Габариты=%d | Ближ=%d | Дальн=%d | ПТФ=%d | ЗТФ=%d", 
-                    time, powerStatus, coolant, transTemp, outTemp, volt, steeringRaw, handbrake, odometer, startStop, posLamp, lowBeam, highBeam, frontFog, rearFog));
+                    "[%s] ЗАПРОС: PWR=%d | ОЖ=%d | АКПП=%d | Борт=%d | АКБ=%d | Руль=%d | СтСтоп=%d", 
+                    time, powerStatus, coolant, transTemp, outTemp, volt, steeringRaw, startStop));
 
                 runOnUiThread(new Runnable() {
                     public void run() {
-                        // Статус питания
                         if (powerStatus != Integer.MIN_VALUE) {
                             String pwr = "?";
                             if (powerStatus == 0) pwr = "OFF";
@@ -234,54 +218,21 @@ public class MainActivity extends Activity {
                             tvPower.setText("PWR: " + pwr);
                         }
 
-                        // Температуры и вольтаж
                         if (coolant > 0 && coolant < 120) tvCoolant.setText(String.format(Locale.US, "%d °C", coolant));
                         if (transTemp > -40 && transTemp < 150) tvTransTemp.setText(String.format(Locale.US, "%d °C", transTemp));
                         if (outTemp > -40 && outTemp < 50) tvOutTemp.setText(String.format(Locale.US, "%d °C", outTemp));
                         if (volt > 0) tvVoltage.setText(String.format(Locale.US, "АКБ: %.1f В", volt / 100.0f));
 
-                        // Руль
+                        // ФИЛЬТР РУЛЯ: Игнорируем прыжки больше 1000 (100 градусов за 2 сек)
                         if (steeringRaw > 0 && steeringRaw < 9000) {
-                            tvSteering.setText(String.format(Locale.US, "%.1f °", steeringRaw / 10.0f));
-                        }
-
-                        // Ручник
-                        if (handbrake != Integer.MIN_VALUE) {
-                            if (handbrake == 1) {
-                                tvHandbrake.setText("ЗАТЯНУТ");
-                                tvHandbrake.setTextColor(Color.RED);
-                            } else {
-                                tvHandbrake.setText("Опущен");
-                                tvHandbrake.setTextColor(Color.LTGRAY);
+                            if (Math.abs(steeringRaw - lastSteeringRaw) < 1000) {
+                                tvSteering.setText(String.format(Locale.US, "%.1f °", steeringRaw / 10.0f));
                             }
+                            lastSteeringRaw = steeringRaw;
                         }
 
-                        // Пробег
-                        if (odometer != Integer.MIN_VALUE && odometer >= 0) {
-                            tvOdometer.setText(String.format(Locale.US, "%d км", odometer));
-                        }
-
-                        // Старт-Стоп
                         if (startStop != Integer.MIN_VALUE) {
                             tvStartStop.setText(startStop == 1 ? "ВКЛ" : "ВЫКЛ");
-                        }
-
-                        // Свет
-                        StringBuilder lightStr = new StringBuilder();
-                        if (posLamp == 1) lightStr.append("Г ");
-                        if (lowBeam == 1) lightStr.append("Б ");
-                        if (highBeam == 1) lightStr.append("Д ");
-                        if (frontFog == 1) lightStr.append("ПТФ ");
-                        if (rearFog == 1) lightStr.append("ЗТФ");
-                        
-                        if (lightStr.length() > 0) {
-                            tvLights.setText(lightStr.toString().trim());
-                            tvLights.setTextColor(Color.YELLOW);
-                        } else if (posLamp == 0) { 
-                            tvLights.setText("Выкл");
-                            tvLights.setTextColor(Color.GRAY);
-                        } else {
-                            tvLights.setText("--");
                         }
                     }
                 });
@@ -370,19 +321,6 @@ public class MainActivity extends Activity {
             
             case "BCM_BattVolt_R":
                 if (value > 0) tvVoltage.setText(String.format(Locale.US, "АКБ: %.1f В", value / 100.0f));
-                break;
-            case "BCM_SteeringWheelAngle_R":
-                if (value > 0 && value < 9000) tvSteering.setText(String.format(Locale.US, "%.1f °", value / 10.0f));
-                break;
-            case "ParkBrakeSts":
-            case "BCM_ParkBrakeSts_R":
-                if (value == 1) {
-                    tvHandbrake.setText("ЗАТЯНУТ");
-                    tvHandbrake.setTextColor(Color.RED);
-                } else {
-                    tvHandbrake.setText("Опущен");
-                    tvHandbrake.setTextColor(Color.LTGRAY);
-                }
                 break;
         }
     }

@@ -200,8 +200,6 @@ public class MainActivity extends Activity {
                 final int powerStatus = getDeviceValue("BCM_SystemPower_R");
                 final int startStop = getDeviceValue("BCM_Smart_Stop");
 
-                // Руль больше НЕ опрашиваем здесь, чтобы не было задержки!
-
                 runOnUiThread(new Runnable() {
                     public void run() {
                         if (powerStatus != Integer.MIN_VALUE) {
@@ -305,16 +303,15 @@ public class MainActivity extends Activity {
             
             // === РУЛЬ (МГНОВЕННО ИЗ СОБЫТИЙ) ===
             case "BCM_SteeringWheelAngle_R":
-                // Защита от диких глюков
                 if (value >= 0 && value < 9000) {
                     float angle = value / 10.0f;
-                    // Определяем знак (1 - влево, 0 - вправо, зависит от калибровки)
-                    String direction = (currentSteeringSign == 1) ? "◄" : "►";
+                    // ИНВЕРТИРОВАЛИ ЛОГИКУ: Теперь 1 - это вправо (►), 0 - влево (◄)
+                    String direction = (currentSteeringSign == 1) ? "►" : "◄";
                     tvSteering.setText(String.format(Locale.US, "%.1f ° %s", angle, direction));
                 }
                 break;
             case "BCM_SteeringWheelAngleSign_R":
-                currentSteeringSign = value; // Запоминаем знак
+                currentSteeringSign = value; 
                 break;
         }
     }
